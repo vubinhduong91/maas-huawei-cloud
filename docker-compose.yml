@@ -1,0 +1,37 @@
+name: maas-cache-lab
+
+services:
+  # One-shot: renders conf/apisix.yaml (with MAAS_API_KEY) into a docker volume.
+  apisix-render:
+    image: python:3.11-slim
+    env_file: .env
+    volumes:
+      - ./apisix:/src:ro
+      - apisix-rendered:/out
+    command: ["python", "/src/render.py", "--out", "/out/apisix.yaml"]
+    restart: "no"
+
+  # Mode A (production-like): client -> APISIX -> MaaS.
+  # The APISIX container never receives MAAS_API_KEY as an env var.
+  apisix:
+    image: apache/apisix:${APISIX_IMAGE_TAG:-3.11.0-debian}
+    depends_on:
+      apisix-render:
+        condition: service_completed_successfully
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        cp /rendered/apisix.yaml /usr/local/apisix/conf/apisix.yaml &&
+        /usr/bin/apisix init &&
+        exec /usr/local/openresty/bin/openresty -p /usr/local/apisix -g 'daemon off;'
+    volumes:
+      - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - apisix-rendered:/rendered:ro
+      - ./logs/apisix:/usr/local/apisix/logs/lab
+    ports:
+      - "9080:9080"
+    restart: unless-stopped
+
+volumes:
+  apisix-rendered:

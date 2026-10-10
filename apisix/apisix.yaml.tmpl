@@ -1,0 +1,86 @@
+# Template for conf/apisix.yaml. Placeholders use @{NAME} and are filled by render.py.
+# The rendered file contains MAAS_API_KEY: it lives only in a docker volume.
+upstreams:
+  - id: maas
+    type: roundrobin
+    scheme: @{UPSTREAM_SCHEME}
+    pass_host: rewrite
+    upstream_host: @{UPSTREAM_HOST}
+    nodes:
+      - host: @{UPSTREAM_HOST}
+        port: @{UPSTREAM_PORT}
+        weight: 1
+    timeout:
+      connect: 10
+      send: 600
+      read: 600
+
+routes:
+  - id: anthropic-messages
+    uris:
+      - /v1/messages
+      - /v1/messages/count_tokens
+    methods:
+      - POST
+    upstream_id: maas
+    plugins:
+      serverless-pre-function:
+        phase: rewrite
+        functions:
+          - |
+            return function(conf, ctx)
+              -- Claude Code sends "Authorization: Bearer <key>" with ANTHROPIC_AUTH_TOKEN
+              -- and "x-api-key: <key>" with ANTHROPIC_API_KEY. key-auth reads a single
+              -- header, so copy the bearer token into x-api-key. Body is not touched.
+              local core = require("apisix.core")
+              if core.request.header(ctx, "x-api-key") then
+                return
+              end
+              local auth = core.request.header(ctx, "authorization")
+              local token = auth and auth:match("^[Bb]earer%s+(%S+)%s*$")
+              if token then
+                core.request.set_header(ctx, "x-api-key", token)
+              end
+            end
+      key-auth:
+        header: x-api-key
+        hide_credentials: true
+      proxy-rewrite:
+        regex_uri: @{REGEX_URI}
+        headers:
+          set: @{HEADERS_SET}
+@{HEADERS_REMOVE}
+      file-logger:
+        path: /usr/local/apisix/logs/lab/requests.log
+        include_req_body: true
+        max_req_body_bytes: 16777216
+        # Explicit format: request headers are NOT logged, so neither the developer
+        # key nor the injected MAAS key can end up in the log.
+        log_format:
+          ts: "$time_iso8601"
+          request_id: "$request_id"
+          client_ip: "$remote_addr"
+          consumer: "$consumer_name"
+          route_id: "$route_id"
+          method: "$request_method"
+          request_uri: "$request_uri"
+          upstream_uri: "$upstream_uri"
+          status: "$status"
+          request_length: "$request_length"
+          content_length: "$http_content_length"
+          bytes_sent: "$bytes_sent"
+          request_time: "$request_time"
+          upstream_addr: "$upstream_addr"
+          upstream_status: "$upstream_status"
+          upstream_connect_time: "$upstream_connect_time"
+          upstream_header_time: "$upstream_header_time"
+          upstream_response_time: "$upstream_response_time"
+          anthropic_version: "$http_anthropic_version"
+          anthropic_beta: "$http_anthropic_beta"
+          user_agent: "$http_user_agent"
+          claude_code_session_id: "$http_x_claude_code_session_id"
+          request_body: "$request_body"
+
+consumers:
+@{CONSUMERS}
+#END

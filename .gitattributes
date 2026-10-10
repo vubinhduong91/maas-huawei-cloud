@@ -1,0 +1,2 @@
+# Repo is authored on Windows but runs on a Linux VM: keep LF everywhere.
+* text=auto eol=lf

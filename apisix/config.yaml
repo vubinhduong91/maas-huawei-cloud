@@ -1,0 +1,20 @@
+# APISIX 3.x — standalone (no etcd). Routes/consumers come from conf/apisix.yaml,
+# which is rendered at startup by apisix/render.py (see docker-compose.yml).
+apisix:
+  node_listen:
+    - 9080
+  enable_admin: false
+  data_encryption:
+    # Consumer keys in apisix.yaml are plaintext lab keys; do not try to decrypt them.
+    enable_encrypt_fields: false
+
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml
+
+nginx_config:
+  error_log_level: warn
+  http_configuration_snippet: |
+    # SSE: pass upstream chunks to the client as soon as they arrive.
+    proxy_buffering off;
