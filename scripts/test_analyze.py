@@ -92,7 +92,7 @@ def main():
     (tmp / "scenarios.jsonl").write_text(json.dumps({"session": "s1", "scenario": "S2"}) + "\n")
 
     out = tmp / "reports"
-    run = subprocess.run([sys.executable, str(ROOT / "analyze.py"), "--tap-dir", str(tap), "--out-dir", str(out),
+    run = subprocess.run([sys.executable, str(ROOT / "analyze.py"), "--tap-dir", str(tap), "--out-dir", str(out), "--env", str(tmp / "none.env"),
                           "--scenarios", str(tmp / "scenarios.jsonl")], capture_output=True, text=True)
     check("analyze.py exits 0", run.returncode == 0, run.stderr[-800:])
     if run.returncode != 0:
@@ -131,6 +131,8 @@ def main():
     check("report has Expected vs actual", "## Expected vs actual" in report and "Serving-side suspects" in report)
     check("report has divergence excerpt for s1/3", "### `s1/0003` — timestamp / date" in report and "⟦" in report)
     check("report has per-scenario and per-session tables", "## By scenario" in report and "## By session" in report)
+    check("report has by-model table and upper-bound cost", "## By model" in report and "## Estimated MaaS cost" in report
+          and "Upper bound" in report)
     print(f"\npassed={sum(results)} failed={len(results) - sum(results)}")
     return all(results)
 

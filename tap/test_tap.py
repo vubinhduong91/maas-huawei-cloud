@@ -19,7 +19,8 @@ import tap
 
 MAAS_KEY = "test-maas-secret-0123456789"
 DEV_KEYS = "dev_alice:key-alice-test,dev_bob:key-bob-test"
-UP_PORT, B_PORT, C_PORT = 18080, 19090, 19091
+UP_PORT, B_PORT, C_PORT, ANTHROPIC_PORT = 18080, 19090, 19091, 18081
+OAUTH = "sk-ant-oat01-test-token-0123456789"
 
 seen = []          # requests received by the fake upstream
 results = []
@@ -32,7 +33,7 @@ def check(name, cond, detail=""):
 
 async def fake_upstream(request):
     body = await request.read()
-    seen.append({"raw_path": request.raw_path,
+    seen.append({"raw_path": request.raw_path, "host": request.host,
                  "headers": [(k.decode(), v.decode()) for k, v in request.raw_headers],
                  "body": body})
     if "sse" in request.raw_path:
@@ -82,6 +83,7 @@ async def main():
     cfg = tap.load_config({
         "MAAS_BASE_URL": "https://maas.invalid/anthropic",
         "TAP_UPSTREAM_ORIGIN": f"http://127.0.0.1:{UP_PORT}",
+        "TAP_ANTHROPIC_ORIGIN": f"http://127.0.0.1:{ANTHROPIC_PORT}",
         "MAAS_API_KEY": MAAS_KEY, "MAAS_AUTH_HEADER": "Authorization", "MAAS_AUTH_SCHEME": "Bearer",
         "DEV_KEYS": DEV_KEYS, "TAP_LOG_DIR": str(log_dir), "TAP_SESSION_GAP_S": "300",
     })
@@ -90,6 +92,7 @@ async def main():
     up_runner = web.AppRunner(up_app)
     await up_runner.setup()
     await web.TCPSite(up_runner, "127.0.0.1", UP_PORT).start()
+    await web.TCPSite(up_runner, "127.0.0.1", ANTHROPIC_PORT).start()   # fake api.anthropic.com
     runners, http = await tap.start(cfg, B_PORT, C_PORT, host="127.0.0.1")
 
     # 1. mode B: byte-exact body, header order/case, raw query, lab headers stripped
@@ -185,16 +188,35 @@ async def main():
     check("seq per session", sorted(p.name for p in (log_dir / "sess-seq").glob("*.json")) ==
           ["0001.json", "0002.json"])
 
-    # 6. health probe answers without forwarding or recording
+    # 6. mode B, Claude model (X-Lab-Target: anthropic): to the Anthropic origin, path and
+    #    client token unchanged, lab headers stripped, accept-encoding limited to gzip/deflate
+    status, _, _ = await raw_http(B_PORT, ["POST /v1/messages?beta=true HTTP/1.1", "Host: api.anthropic.com",
+                                           f"Authorization: Bearer {OAUTH}", "Accept-Encoding: gzip, br, zstd",
+                                           "X-Lab-Target: anthropic", "X-Lab-Consumer: dev_alice",
+                                           "X-Claude-Code-Session-Id: sess-claude", "content-type: application/json"],
+                                  b'{"model":"claude-sonnet-x","messages":[]}')
+    got = seen[-1]
+    hdr = {k.lower(): v for k, v in got["headers"]}
+    check("anthropic target: origin, path, token kept", status == 200 and got["host"].endswith(f":{ANTHROPIC_PORT}")
+          and got["raw_path"] == "/v1/messages?beta=true" and hdr.get("authorization") == f"Bearer {OAUTH}",
+          (got["host"], got["raw_path"]))
+    check("anthropic target: x-lab-* stripped, accept-encoding gzip/deflate",
+          not any(k.startswith("x-lab-") for k in hdr) and hdr.get("accept-encoding") == "gzip, deflate", hdr)
+    rec = json.loads(next((log_dir / "sess-claude").glob("*.json")).read_text())
+    check("anthropic target: record marks target, consumer, usage; token redacted",
+          rec["upstream_target"] == "anthropic" and rec["consumer"] == "dev_alice" and rec["usage"]
+          and ["Authorization", "<redacted>"] in rec["request_headers"], rec.get("upstream_target"))
+
+    # 7. health probe answers without forwarding or recording
     before_seen, before_recs = len(seen), len(records(log_dir))
     async with http.get(f"http://127.0.0.1:{C_PORT}/__tap/health") as r:
         status = r.status
     check("health probe: 200, not forwarded, not recorded", status == 200 and
           len(seen) == before_seen and len(records(log_dir)) == before_recs)
 
-    # 7. no secret on disk
+    # 8. no secret on disk
     blob = "".join(p.read_text() for p in log_dir.rglob("*.json"))
-    leaked = [s for s in (MAAS_KEY, "key-alice-test", "key-bob-test") if s in blob]
+    leaked = [s for s in (MAAS_KEY, "key-alice-test", "key-bob-test", OAUTH) if s in blob]
     check("no MaaS/dev key in records", not leaked, leaked)
 
     await tap.stop(runners, http)

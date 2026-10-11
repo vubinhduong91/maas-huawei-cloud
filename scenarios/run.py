@@ -42,6 +42,58 @@ ALLOWED_TOOLS = ("Read,Grep,Glob,LS,Edit,MultiEdit,Write,TodoWrite,"
 TTL_DELAYS = [30, 60, 120, 180, 300, 600, 900]
 _lock = threading.Lock()
 
+sys.path.insert(0, str(LAB))
+from analyze import maas_prices  # noqa: E402  (same price model as the report)
+
+
+class Budget:
+    """Stops the run once the estimated MaaS cost of this run's sessions exceeds the budget.
+
+    Checked before every Claude Code turn and every replay, so the overshoot is at most one
+    step. Prices: MAAS_PRICE_*_PER_M in .env, else the upper bound used by analyze.py.
+    """
+
+    def __init__(self, run, limit):
+        self.run, self.limit, self.stopped = run, limit, False
+        self.prices = maas_prices(LAB / ".env")
+
+    def spent(self):
+        sessions = set()
+        if LABELS.exists():
+            for line in LABELS.read_text().splitlines():
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if d.get("run") == self.run:
+                    sessions.add(d["session"])
+        cost = 0.0
+        for s in sessions:
+            for r in records(s):
+                if r.get("status") != 200 or (r.get("upstream_target") or "maas") != "maas":
+                    continue
+                u = r.get("usage") or {}
+                cost += ((u.get("input_tokens") or 0) * self.prices["input"]
+                         + (u.get("cache_read_input_tokens") or 0) * self.prices["cache_read"]
+                         + (u.get("output_tokens") or 0) * self.prices["output"]) / 1e6
+        return cost
+
+    def check(self, where):
+        if self.stopped:
+            raise BudgetExceeded(where)
+        cost = self.spent()
+        if cost > self.limit:
+            self.stopped = True
+            log(f"BUDGET: estimated ${cost:.2f} > ${self.limit:.2f} — stopping before {where}")
+            raise BudgetExceeded(where)
+
+
+class BudgetExceeded(Exception):
+    pass
+
+
+BUDGET = None
+
 
 def log(msg):
     with _lock:
@@ -126,6 +178,7 @@ def run_session(scenario, run, dev, turns, **kw):
     """Run prompts as one resumed session; returns (session_id, [(turn, start, end, is_error)])."""
     session, spans = None, []
     for i, prompt in enumerate(turns, 1):
+        BUDGET.check(f"{scenario} {dev} turn {i}")
         sid, out, t0, t1 = claude_turn(dev, prompt, session=session, **{k: v for k, v in kw.items() if k != "per_turn"},
                                        **(kw.get("per_turn", {}).get(i, {})))
         if session is None:
@@ -221,7 +274,8 @@ def variant(seed_data, nonce, strip_cache_control=False):
 
 
 def replay(seed_data, body, session, port=APISIX_PORT, dev="dev_alice"):
-    headers = {k: v for k, v in seed_data["headers"] if k.lower() not in DROP and not k.lower().startswith("x-lab-")}
+    BUDGET.check(f"replay {session}")
+    headers ={k: v for k, v in seed_data["headers"] if k.lower() not in DROP and not k.lower().startswith("x-lab-")}
     headers["Authorization"] = f"Bearer {dev_keys()[dev]}"
     headers["X-Claude-Code-Session-Id"] = session
     t0 = time.time()
@@ -280,6 +334,12 @@ def s4(run):
     results = {}
 
     def probe(delay):
+        try:
+            _probe(delay)
+        except BudgetExceeded:
+            pass
+
+    def _probe(delay):
         session = f"S4-{delay}s-{run}"
         label(session, "S4", run, delay_s=delay)
         body = variant(sd, f"S4-{delay}-{run}")
@@ -317,7 +377,10 @@ def s5(run):
         reset_repo(repo)
 
         def work(dev=dev, repo=repo):
-            sessions[dev] = run_session("S5", run, dev, prompts("read-5.txt"), repo=repo)
+            try:
+                sessions[dev] = run_session("S5", run, dev, prompts("read-5.txt"), repo=repo)
+            except BudgetExceeded:
+                pass
 
         t = threading.Thread(target=work)
         t.start()
@@ -391,12 +454,26 @@ def main():
             http.client.HTTPConnection("127.0.0.1", port, timeout=5).request("GET", "/__tap/health")
         except OSError:
             sys.exit(f"nothing on 127.0.0.1:{port}: run `make up MODE=B` first")
-    log(f"run {args.run_id}: {' '.join(wanted)}")
+    global BUDGET
+    limit = float(env().get("SCENARIO_BUDGET_USD") or 15)
+    BUDGET = Budget(args.run_id, limit)
+    log(f"run {args.run_id}: {' '.join(wanted)}; MaaS budget ${limit:.2f} "
+        f"(in ${BUDGET.prices['input']}/M, cache read ${BUDGET.prices['cache_read']}/M, out ${BUDGET.prices['output']}/M)")
+    done, skipped = [], []
     for s in wanted:
-        if s in SCENARIOS:
-            log(f"== {s}")
+        if s not in SCENARIOS:
+            continue
+        if BUDGET.stopped:
+            skipped.append(s)
+            continue
+        log(f"== {s}")
+        try:
             SCENARIOS[s](args.run_id)
-    log("done; next: make analyze")
+            done.append(s)
+        except BudgetExceeded:
+            skipped.append(f"{s} (partial)")
+    log(f"done: {' '.join(done) or '-'}; skipped for budget: {' '.join(skipped) or '-'}; "
+        f"estimated MaaS cost ${BUDGET.spent():.2f}; next: make analyze")
 
 
 if __name__ == "__main__":

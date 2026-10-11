@@ -433,6 +433,31 @@ def write_report(rows, path, args):
           f"- Weighted cache hit: **{pct(overall['weighted_hit'])}%** ({overall['read']:,} / {overall['total']:,} tokens)",
           f"- TTFT P50 / P95: {fmt(overall['ttft_p50'])} s / {fmt(overall['ttft_p95'])} s (n={overall['ttft_n']})", ""]
 
+    by_model = defaultdict(list)
+    for r in rows:
+        by_model[r["model"]].append(r)
+    L += ["## By model", "", "| Model | Upstream | Requests | Weighted hit % | TTFT P50 s | TTFT P95 s | Input + cache tokens |",
+          "|---|---|---:|---:|---:|---:|---:|"]
+    for name, rs in sorted(by_model.items(), key=lambda kv: str(kv[0])):
+        s = group_stats(rs)
+        upstream = rs[0]["_rec"].get("upstream_target") or "maas"
+        L.append(f"| {name} | {upstream} | {s['requests']} | {pct(s['weighted_hit'])} | {fmt(s['ttft_p50'])} |"
+                 f" {fmt(s['ttft_p95'])} | {s['total']:,} |")
+    L.append("")
+
+    prices = args.prices
+    billed = [r for r in rows if r["status"] == 200 and (r["_rec"].get("upstream_target") or "maas") == "maas"]
+    tin = sum(r["input_tokens"] for r in billed)
+    trd = sum(r["cache_read"] for r in billed)
+    tout = sum(r["output_tokens"] for r in billed)
+    cost = tin / 1e6 * prices["input"] + trd / 1e6 * prices["cache_read"] + tout / 1e6 * prices["output"]
+    L += ["## Estimated MaaS cost", "",
+          f"Prices per 1M tokens: input ${prices['input']:.2f}, cache read ${prices['cache_read']:.2f},"
+          f" output ${prices['output']:.2f}; cache creation is not billed. {prices['note']}",
+          "Claude models (subscription passthrough) are excluded.", "",
+          f"- MaaS requests: {len(billed)}; uncached input {tin:,}, cache read {trd:,}, output {tout:,} tokens",
+          f"- **Estimated cost: ${cost:.2f}**", ""]
+
     L += ["## By scenario", "", "| Scenario | Sessions | Requests | Weighted hit % | TTFT P50 s | TTFT P95 s |",
           "|---|---:|---:|---:|---:|---:|"]
     for name, rs in sorted(scen.items()):
@@ -516,6 +541,30 @@ def write_report(rows, path, args):
     path.write_text("\n".join(L), encoding="utf-8")
 
 
+def maas_prices(env_path):
+    """USD per 1M tokens from .env. Defaults: Z.ai list price for GLM-5.3 ($1.40 in, $4.40 out)
+    with cache reads at the full input price, i.e. an upper bound until Huawei prices are known."""
+    values = {}
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            k, sep, v = line.partition("=")
+            if sep and not k.strip().startswith("#"):
+                values[k.strip()] = v.strip()
+
+    def num(name, default):
+        try:
+            return float(values.get(name) or default)
+        except ValueError:
+            return default
+
+    inp = num("MAAS_PRICE_INPUT_PER_M", 1.40)
+    explicit = all(values.get(n) for n in ("MAAS_PRICE_INPUT_PER_M", "MAAS_PRICE_CACHE_READ_PER_M", "MAAS_PRICE_OUTPUT_PER_M"))
+    return {"input": inp, "cache_read": num("MAAS_PRICE_CACHE_READ_PER_M", inp),
+            "output": num("MAAS_PRICE_OUTPUT_PER_M", 4.40),
+            "note": "Prices from .env." if explicit else
+                    "**Upper bound**: Huawei prices not set, defaults are the Z.ai list price with cache reads at the input price."}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--tap-dir", type=Path, default=Path("logs/tap"))
@@ -525,7 +574,9 @@ def main():
     ap.add_argument("--scenarios", type=Path, default=Path("logs/scenarios.jsonl"))
     ap.add_argument("--window-min", type=int, default=120,
                     help="how far back to look for a shared prefix (expected vs actual)")
+    ap.add_argument("--env", type=Path, default=Path(".env"), help="prices: MAAS_PRICE_*_PER_M")
     args = ap.parse_args()
+    args.prices = maas_prices(args.env)
 
     recs = load_records(args.tap_dir, args.since, args.until)
     rows = analyze(recs, load_scenarios(args.scenarios), args.window_min)

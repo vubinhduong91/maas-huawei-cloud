@@ -81,12 +81,13 @@ def passthrough_enabled():
 ANTHROPIC_UPSTREAM = """\
   - id: anthropic
     type: roundrobin
-    scheme: https
+    # Mode B: through the tap (it forwards to api.anthropic.com and records usage).
+    scheme: {scheme}
     pass_host: rewrite
     upstream_host: api.anthropic.com
     nodes:
-      - host: api.anthropic.com
-        port: 443
+      - host: {host}
+        port: {port}
         weight: 1
     timeout:
       connect: 10
@@ -113,9 +114,13 @@ PASSTHROUGH_PLUGINS = """\
                 return
               end
               local core = require("apisix.core")
+              local TO_TAP = {to_tap}   -- mode B: the tap reads x-lab-* and strips them itself
               core.request.set_header(ctx, "authorization", ctx.lab_client_auth)
-              for _, name in ipairs({"x-api-key", "x-lab-target", "x-lab-consumer", "x-lab-request-id"}) do
-                core.request.set_header(ctx, name, nil)
+              core.request.set_header(ctx, "x-api-key", nil)
+              if not TO_TAP then
+                for _, name in ipairs({{"x-lab-target", "x-lab-consumer", "x-lab-request-id"}}) do
+                  core.request.set_header(ctx, name, nil)
+                end
               end
               ctx.var.upstream_uri = ctx.var.request_uri
             end"""
@@ -165,8 +170,10 @@ def render(redacted):
         HEADERS_SET=json.dumps({auth_header: auth_value, **lab_headers}),
         HEADERS_REMOVE=headers_remove,
         PASSTHROUGH_LUA="true" if passthrough else "false",
-        ANTHROPIC_UPSTREAM=ANTHROPIC_UPSTREAM if passthrough else "",
-        PASSTHROUGH_PLUGINS=PASSTHROUGH_PLUGINS if passthrough else "",
+        ANTHROPIC_UPSTREAM=ANTHROPIC_UPSTREAM.format(
+            **({"scheme": "http", "host": q("tap"), "port": 9090} if mode == "B"
+               else {"scheme": "https", "host": q("api.anthropic.com"), "port": 443})) if passthrough else "",
+        PASSTHROUGH_PLUGINS=PASSTHROUGH_PLUGINS.format(to_tap="true" if mode == "B" else "false") if passthrough else "",
         CONSUMERS=consumers,
     )
 

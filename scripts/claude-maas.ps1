@@ -11,6 +11,7 @@
     - opus / haiku keep Claude Code's defaults -> APISIX -> api.anthropic.com with your
       subscription token.
     - APISIX identifies you by the X-Lab-Key header (ANTHROPIC_CUSTOM_HEADERS).
+  -ClaudeSonnet: same, but the sonnet tier stays Claude Sonnet (comparison runs, S9).
   -MaasOnly mode:
     - Every tier is glm-5.3 via MaaS; authenticates with the dev key as ANTHROPIC_AUTH_TOKEN
       and uses a separate config dir (%USERPROFILE%\.claude-maas), no Anthropic login.
@@ -32,6 +33,7 @@ param(
     [int] $LocalPort = 19080,   # dedicated port: never mistake another local service for the tunnel
     [string] $GlmModel = "glm-5.3",   # not "-Model": PowerShell would bind claude's --model to it
     [switch] $MaasOnly,
+    [switch] $ClaudeSonnet,     # S9: keep the real Claude Sonnet for the sonnet tier (no GLM)
     [switch] $NoBackgroundTraffic
 )
 $ErrorActionPreference = "Stop"
@@ -96,8 +98,12 @@ if ($MaasOnly) {
 } else {
     $env:ANTHROPIC_CUSTOM_HEADERS = "X-Lab-Key: $devKey"
     $env:ANTHROPIC_MODEL = "sonnet"
-    $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $glm
-    $summary = "sonnet=$GlmModel (MaaS), opus/haiku=Claude subscription, config=default"
+    if ($ClaudeSonnet) {
+        $summary = "every tier=Claude subscription (via the gateway), config=default"
+    } else {
+        $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $glm
+        $summary = "sonnet=$GlmModel (MaaS), opus/haiku=Claude subscription, config=default"
+    }
 }
 if ($NoBackgroundTraffic) { $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
 else { Remove-Item Env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC -ErrorAction SilentlyContinue }

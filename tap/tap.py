@@ -54,6 +54,7 @@ class Config:
     log_dir: Path
     session_gap_s: float = 300.0
     secrets: list = field(default_factory=list)
+    anthropic_origin: str = "https://api.anthropic.com"   # mode B, X-Lab-Target: anthropic
 
 
 def load_config(environ=os.environ):
@@ -81,6 +82,7 @@ def load_config(environ=os.environ):
         log_dir=Path(environ.get("TAP_LOG_DIR", "/logs")),
         session_gap_s=float(environ.get("TAP_SESSION_GAP_S", "300")),
         secrets=[api_key, *dev_keys],
+        anthropic_origin=(environ.get("TAP_ANTHROPIC_ORIGIN", "").strip() or "https://api.anthropic.com").rstrip("/"),
     )
 
 
@@ -286,9 +288,16 @@ def make_handler(cfg, mode, http, sessions):
         forward = [(k, v) for k, v in received
                    if k.lower() not in HOP_BY_HOP and not k.lower().startswith(LAB_HEADER_PREFIX)]
 
+        origin, target = cfg.upstream_origin, "maas"
         if mode == "B":
             consumer = lab.get("x-lab-consumer")
             upstream_path = request.raw_path            # APISIX already rewrote it
+            if lab.get("x-lab-target") == "anthropic":
+                # Claude model with the client's own token (ANTHROPIC_PASSTHROUGH): APISIX kept the
+                # original path and Authorization. Only gzip/deflate so the tap can read usage
+                # (Claude Code also offers br/zstd); this is the one header the tap changes.
+                origin, target = cfg.anthropic_origin, "anthropic"
+                forward = [(k, "gzip, deflate" if k.lower() == "accept-encoding" else v) for k, v in forward]
         else:
             consumer = cfg.dev_keys.get(dev_key_from(received) or "")
             upstream_path = cfg.maas_prefix + request.raw_path
@@ -299,7 +308,7 @@ def make_handler(cfg, mode, http, sessions):
         record.update(session=session, session_source=source, seq=sessions.next_seq(session),
                       consumer=consumer, lab_request_id=lab.get("x-lab-request-id"),
                       forwarded_headers=redact_headers(forward),
-                      upstream_url=cfg.upstream_origin + upstream_path)
+                      upstream_url=origin + upstream_path, upstream_target=target)
         try:
             text = body.decode("utf-8")
             record["request_body"] = text
@@ -318,7 +327,7 @@ def make_handler(cfg, mode, http, sessions):
         t_sent = time.monotonic()
         try:
             async with http.request(
-                request.method, URL(cfg.upstream_origin + upstream_path, encoded=True),
+                request.method, URL(origin + upstream_path, encoded=True),
                 headers=forward, data=body,
                 skip_auto_headers=("Accept", "Accept-Encoding", "User-Agent", "Content-Type"),
             ) as up:
