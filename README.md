@@ -104,6 +104,7 @@ Mở `ssh -L 19080 → server:9080`, đặt biến `ANTHROPIC_*` chỉ cho tiế
 subscription Claude bình thường, tier sonnet = `glm-5.3[1m]` qua MaaS, opus/haiku qua subscription
 (server cần `ANTHROPIC_PASSTHROUGH=1`). `-MaasOnly`: mọi tier là GLM, xác thực bằng key dev.
 `-ClaudeSonnet`: giữ Claude Sonnet thật. Key dev đọc từ `%USERPROFILE%\.claude-maas\dev-key.txt`.
+Làm luân phiên trên 2 máy (cài máy mới, đồng bộ memory, đăng nhập SSH bằng password): `docs/two-pc.md`.
 
 ## Đọc báo cáo (`reports/report.md`)
 
