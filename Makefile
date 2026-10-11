@@ -12,7 +12,7 @@ ifneq ($(MODE),A)
 export COMPOSE_PROFILES := tap
 endif
 
-.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down
+.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down analyze test-analyze
 
 # Call MaaS directly to verify auth header / count_tokens / model names.
 probe:
@@ -76,3 +76,12 @@ dashboard:
 
 dashboard-down:
 	$(COMPOSE) --profile dashboard rm -sf etcd apisix-dashboard dashboard-loader
+
+# Phase 4: tap records -> reports/report.md + reports/requests.csv.
+# Extra options: make analyze ARGS="--since 2026-10-11T08:00 --window-min 60"
+analyze:
+	python3 analyze.py $(ARGS)
+
+# Offline analyzer tests on synthetic records.
+test-analyze:
+	python3 scripts/test_analyze.py
