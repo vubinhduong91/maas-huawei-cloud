@@ -24,6 +24,7 @@ param(
     [int] $LocalPort = 19080,   # dedicated port: never mistake another local service for the tunnel
     [string] $Model = "glm-5.3",
     [string] $FastModel = "glm-5.2",
+    [int] $MaxContextTokens = 1000000,   # GLM-5.3 context window; Claude Code assumes 200K for unknown models
     [switch] $NoBackgroundTraffic
 )
 $ErrorActionPreference = "Stop"
@@ -65,8 +66,9 @@ $env:ANTHROPIC_MODEL = $Model
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL = $Model
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $Model
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = $FastModel
+$env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = "$MaxContextTokens"
 if ($NoBackgroundTraffic) { $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
 else { Remove-Item Env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC -ErrorAction SilentlyContinue }
 
-Write-Host "claude-maas: base=$($env:ANTHROPIC_BASE_URL) model=$Model fast=$FastModel config=$configDir"
+Write-Host "claude-maas: base=$($env:ANTHROPIC_BASE_URL) model=$Model fast=$FastModel context=$MaxContextTokens config=$configDir"
 & claude @ClaudeArgs
