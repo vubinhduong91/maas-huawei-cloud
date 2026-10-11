@@ -5,6 +5,8 @@ services:
   apisix-render:
     image: python:3.11-slim
     env_file: .env
+    environment:
+      LAB_MODE: ${LAB_MODE:-A}   # set by `make up MODE=...`
     volumes:
       - ./apisix:/src:ro
       - apisix-rendered:/out
@@ -12,6 +14,7 @@ services:
     restart: "no"
 
   # Mode A (production-like): client -> APISIX -> MaaS.
+  # Mode B: client -> APISIX -> tap -> MaaS (upstream switched by render.py).
   # The APISIX container never receives MAAS_API_KEY as an env var.
   apisix:
     image: apache/apisix:${APISIX_IMAGE_TAG:-3.11.0-debian}
@@ -32,6 +35,59 @@ services:
     ports:
       - "9080:9080"
     restart: unless-stopped
+
+  # Recording proxy (Phase 2), only started for modes B and C (profile "tap").
+  #   :9090 mode B, reached by APISIX only;  :9091 mode C, client -> tap -> MaaS.
+  # Holds MAAS_API_KEY (env) because mode C swaps the dev key for it.
+  tap:
+    build: ./tap
+    profiles: ["tap"]
+    env_file: .env
+    environment:
+      TAP_LOG_DIR: /logs
+    user: "${LAB_UID:-1000}:${LAB_GID:-1000}"   # log files owned by the host user
+    volumes:
+      - ./logs/tap:/logs
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+
+  # ---- View-only dashboard (make dashboard), profile "dashboard" --------------------
+  # A second APISIX (>= 3.13, embedded UI) backed by etcd, loaded with the lab config
+  # with keys masked. Not in the request path; it never sees MAAS_API_KEY.
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.17
+    profiles: ["dashboard"]
+    command:
+      - etcd
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+    restart: unless-stopped
+
+  apisix-dashboard:
+    image: apache/apisix:3.14.1-debian
+    profiles: ["dashboard"]
+    depends_on: [etcd]
+    environment:
+      DASHBOARD_ADMIN_KEY: ${DASHBOARD_ADMIN_KEY:-}
+    volumes:
+      - ./dashboard/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+    ports:
+      - "9180:9180"   # Admin API + UI at http://localhost:9180/ui/
+    restart: unless-stopped
+
+  dashboard-loader:
+    image: python:3.11-slim
+    profiles: ["dashboard"]
+    depends_on: [apisix-dashboard]
+    env_file: .env
+    environment:
+      LAB_MODE: ${LAB_MODE:-A}
+    volumes:
+      - ./apisix:/src:ro
+      - ./dashboard:/dash:ro
+    command: ["sh", "-c", "pip install -q --root-user-action=ignore pyyaml==6.0.2 && python /dash/load.py"]
+    restart: "no"
 
 volumes:
   apisix-rendered:

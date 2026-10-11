@@ -65,8 +65,25 @@ def parse_dev_keys(raw):
     return devs
 
 
+def lab_mode():
+    mode = os.environ.get("LAB_MODE", "A").strip().upper() or "A"
+    if mode not in ("A", "B", "C"):
+        die(f"LAB_MODE must be A, B or C, got {mode!r}")
+    return mode
+
+
 def render(redacted):
     scheme, host, port, prefix = parse_base_url(env("MAAS_BASE_URL"))
+    mode = lab_mode()
+    node_scheme, node_host, node_port = scheme, host, port
+    lab_headers = {}
+    if mode == "B":
+        # APISIX -> tap -> MaaS. The Host header stays the MaaS host (pass_host rewrite);
+        # the tap records and strips x-lab-* before forwarding, so MaaS sees mode A bytes.
+        node_scheme, node_host, node_port = "http", "tap", 9090
+        lab_headers = {"X-Lab-Consumer": "$consumer_name", "X-Lab-Request-Id": "$request_id"}
+    print(f"render: LAB_MODE={mode}, APISIX upstream {node_scheme}://{node_host}:{node_port}",
+          file=sys.stderr)
     api_key = REDACTED if redacted else env("MAAS_API_KEY")
     auth_header = env("MAAS_AUTH_HEADER")
     auth_scheme = env("MAAS_AUTH_SCHEME", required=False)
@@ -89,11 +106,12 @@ def render(redacted):
 
     template = Tmpl((HERE / "apisix.yaml.tmpl").read_text(encoding="utf-8"))
     return template.substitute(
-        UPSTREAM_SCHEME=scheme,
+        NODE_SCHEME=node_scheme,
+        NODE_HOST=q(node_host),
+        NODE_PORT=node_port,
         UPSTREAM_HOST=q(host),
-        UPSTREAM_PORT=port,
         REGEX_URI=json.dumps(["^/v1/(.*)$", f"{prefix}/v1/$1"]),
-        HEADERS_SET=json.dumps({auth_header: auth_value}),
+        HEADERS_SET=json.dumps({auth_header: auth_value, **lab_headers}),
         HEADERS_REMOVE=headers_remove,
         CONSUMERS=consumers,
     )

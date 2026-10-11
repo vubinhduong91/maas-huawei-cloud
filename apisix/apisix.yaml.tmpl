@@ -3,12 +3,13 @@
 upstreams:
   - id: maas
     type: roundrobin
-    scheme: @{UPSTREAM_SCHEME}
+    # Mode A/C: nodes = MaaS. Mode B: nodes = tap (http), Host header still MaaS.
+    scheme: @{NODE_SCHEME}
     pass_host: rewrite
     upstream_host: @{UPSTREAM_HOST}
     nodes:
-      - host: @{UPSTREAM_HOST}
-        port: @{UPSTREAM_PORT}
+      - host: @{NODE_HOST}
+        port: @{NODE_PORT}
         weight: 1
     timeout:
       connect: 10
@@ -54,6 +55,9 @@ routes:
 @{HEADERS_REMOVE}
       file-logger:
         path: /usr/local/apisix/logs/lab/requests.log
+        # With log_format set, APISIX 3.11 ignores include_req_body/max_req_body_bytes and
+        # the body comes only from "$request_body" below (see client_body_buffer_size in
+        # config.yaml). Kept for when log_format is removed.
         include_req_body: true
         max_req_body_bytes: 16777216
         # Explicit format: request headers are NOT logged, so neither the developer

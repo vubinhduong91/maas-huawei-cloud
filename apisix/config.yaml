@@ -18,3 +18,9 @@ nginx_config:
   http_configuration_snippet: |
     # SSE: pass upstream chunks to the client as soon as they arrive.
     proxy_buffering off;
+    # With log_format set, file-logger logs the body only through $request_body, which
+    # nginx leaves empty once a body spills to a temp file (default buffer 8k/16k).
+    # Keep bodies up to 32m (~160K-token Claude Code requests) in one memory buffer.
+    # Affects logging only, not the bytes forwarded upstream.
+    client_body_buffer_size 32m;
+    client_body_in_single_buffer on;

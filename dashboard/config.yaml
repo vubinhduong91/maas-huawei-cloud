@@ -1,0 +1,26 @@
+# View-only mirror of the lab APISIX (make dashboard). Not in the request path.
+# APISIX >= 3.13 ships an embedded dashboard at http://localhost:9180/ui/ which needs the
+# Admin API, which needs etcd. The lab gateway itself stays standalone (apisix/config.yaml).
+apisix:
+  node_listen:
+    - 9080          # not published: the mirror never proxies lab traffic
+  enable_admin: true
+  data_encryption:
+    enable_encrypt_fields: false
+
+deployment:
+  role: traditional
+  role_traditional:
+    config_provider: etcd
+  admin:
+    enable_admin_ui: true
+    allow_admin:
+      - 0.0.0.0/0   # reached through the docker port mapping
+    admin_key:
+      - name: admin
+        key: ${{DASHBOARD_ADMIN_KEY}}
+        role: admin
+  etcd:
+    host:
+      - "http://etcd:2379"
+    prefix: /apisix

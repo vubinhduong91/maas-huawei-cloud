@@ -1,7 +1,18 @@
 SHELL := /bin/bash
 COMPOSE := docker compose
 
-.PHONY: up down probe smoke render-check logs clean-logs
+# Lab mode: A = client -> APISIX -> MaaS (production-like, tap off)
+#           B = client -> APISIX -> tap -> MaaS
+#           C = client -> tap(:9091) -> MaaS (APISIX still up on :9080 in mode B config)
+MODE ?= A
+export LAB_MODE := $(if $(filter C,$(MODE)),B,$(MODE))
+export LAB_UID := $(shell id -u)
+export LAB_GID := $(shell id -g)
+ifneq ($(MODE),A)
+export COMPOSE_PROFILES := tap
+endif
+
+.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down
 
 # Call MaaS directly to verify auth header / count_tokens / model names.
 probe:
@@ -10,11 +21,13 @@ probe:
 up:
 	mkdir -p logs/apisix logs/tap reports
 	chmod 777 logs/apisix  # written by the non-root apisix user inside the container
-	$(COMPOSE) up -d --force-recreate
+	@if [[ "$(MODE)" == A ]]; then $(COMPOSE) --profile tap rm -sf tap >/dev/null 2>&1 || true; fi
+	$(COMPOSE) up -d --build --force-recreate
+	@echo "lab mode $(MODE): APISIX http://localhost:9080$(if $(filter A,$(MODE)),, | tap mode C http://localhost:9091)"
 
 # -v also drops the volume holding the rendered config (it contains MAAS_API_KEY).
 down:
-	$(COMPOSE) down -v
+	$(COMPOSE) --profile tap --profile dashboard down -v
 
 smoke:
 	bash scripts/smoke.sh
@@ -24,7 +37,42 @@ render-check:
 	$(COMPOSE) run --rm --no-deps apisix-render python /src/render.py --redacted --out -
 
 logs:
-	$(COMPOSE) logs -f apisix
+	$(COMPOSE) logs -f apisix $(if $(filter A,$(MODE)),,tap)
 
 clean-logs:
 	rm -rf logs/apisix/* logs/tap/*
+
+# Offline tap tests against a fake upstream (no MaaS call).
+tap-test:
+	$(COMPOSE) --profile tap build tap
+	$(COMPOSE) --profile tap run --rm --no-deps -T tap python test_tap.py
+
+# Phase 2 checks against real MaaS; expects `make up MODE=B`.
+tap-smoke:
+	bash scripts/tap-smoke.sh
+
+# Diff the body APISIX logged with the body the tap received (mode B).
+diff:
+	python3 scripts/diff_bodies.py
+
+# Full Phase 2 run: fresh logs, mode B, Phase 1 smoke through the tap, then tap-smoke.
+test-phase2:
+	$(MAKE) tap-test
+	$(MAKE) down
+	$(MAKE) clean-logs
+	$(MAKE) up MODE=B
+	bash scripts/smoke.sh
+	bash scripts/tap-smoke.sh
+
+# View-only APISIX dashboard (http://localhost:9180/ui/) mirroring the running lab config,
+# keys masked. Re-run after changing the lab config. Mode is detected from the tap container.
+dashboard:
+	@grep -q '^DASHBOARD_ADMIN_KEY=.' .env || echo "DASHBOARD_ADMIN_KEY=$$(openssl rand -hex 16)" >> .env
+	$(COMPOSE) --profile dashboard up -d etcd apisix-dashboard
+	@mode=$$($(COMPOSE) --profile tap ps -q tap 2>/dev/null | grep -q . && echo B || echo A); \
+	  echo "mirroring LAB_MODE=$$mode"; \
+	  LAB_MODE=$$mode $(COMPOSE) --profile dashboard run --rm -T dashboard-loader
+	@echo "dashboard: http://localhost:9180/ui/  admin key: $$(grep '^DASHBOARD_ADMIN_KEY=' .env | cut -d= -f2-)"
+
+dashboard-down:
+	$(COMPOSE) --profile dashboard rm -sf etcd apisix-dashboard dashboard-loader
