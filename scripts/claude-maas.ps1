@@ -24,6 +24,7 @@
   .\claude-maas.ps1 -Server root@1.2.3.4 -IdentityFile C:\keys\ecs.pem
   .\claude-maas.ps1 -Server root@1.2.3.4 -IdentityFile C:\keys\ecs.pem -p "explain this repo"
   .\claude-maas.ps1 -Server root@1.2.3.4 -IdentityFile C:\keys\ecs.pem -MaasOnly
+  .\claude-maas.ps1 -Server root@1.2.3.4    # no key: type the password in the ssh window
 #>
 # Plain (non-advanced) script on purpose: undeclared arguments such as -p land in $args and
 # are passed to claude unchanged; an advanced script would bind -p to -PipelineVariable.
@@ -71,10 +72,17 @@ if (-not (Test-Port $LocalPort)) {
     if ($IdentityFile) { $sshArgs += @("-i", $IdentityFile) }
     $sshArgs += $Server
     Write-Host "claude-maas: opening SSH tunnel localhost:$LocalPort -> ${Server}:9080"
-    Start-Process -FilePath "ssh" -ArgumentList $sshArgs -WindowStyle Hidden | Out-Null
-    $deadline = (Get-Date).AddSeconds(20)
+    if ($IdentityFile) {
+        Start-Process -FilePath "ssh" -ArgumentList $sshArgs -WindowStyle Hidden | Out-Null
+        $deadline = (Get-Date).AddSeconds(20)
+    } else {
+        # Password login: the ssh window must be visible to type the password; keep it open.
+        Write-Host "claude-maas: type the server password in the ssh window (leave it open)"
+        Start-Process -FilePath "ssh" -ArgumentList $sshArgs -WindowStyle Normal | Out-Null
+        $deadline = (Get-Date).AddSeconds(120)
+    }
     while (-not (Test-Port $LocalPort)) {
-        if ((Get-Date) -gt $deadline) { throw "SSH tunnel did not come up (check -Server / -IdentityFile)." }
+        if ((Get-Date) -gt $deadline) { throw "SSH tunnel did not come up (check -Server / -IdentityFile / password)." }
         Start-Sleep -Milliseconds 500
     }
 }
