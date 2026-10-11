@@ -15,7 +15,7 @@ upstreams:
       connect: 10
       send: 600
       read: 600
-
+@{ANTHROPIC_UPSTREAM}
 routes:
   - id: anthropic-messages
     uris:
@@ -30,20 +30,42 @@ routes:
         functions:
           - |
             return function(conf, ctx)
-              -- Claude Code sends "Authorization: Bearer <key>" with ANTHROPIC_AUTH_TOKEN
-              -- and "x-api-key: <key>" with ANTHROPIC_API_KEY. key-auth reads a single
-              -- header, so move the bearer token into x-api-key. The developer's
-              -- Authorization is dropped here; proxy-rewrite sets the MaaS one. Body is not touched.
-              local core = require("apisix.core")
-              if core.request.header(ctx, "x-api-key") then
+              -- Developer key, first found of: X-Lab-Key (sent through ANTHROPIC_CUSTOM_HEADERS
+              -- when Claude Code is logged in with a Claude subscription), x-api-key
+              -- (ANTHROPIC_API_KEY), Authorization: Bearer (ANTHROPIC_AUTH_TOKEN).
+              -- key-auth reads x-api-key. The client Authorization is dropped here;
+              -- proxy-rewrite sets the MaaS one. The body is never modified.
+              -- APISIX runs rewrite-phase plugins again after key-auth found the consumer
+              -- ("rewrite_in_consumer"); by then the headers are already rewritten, so run once.
+              if ctx.lab_pre_done then
                 return
               end
+              ctx.lab_pre_done = true
+              local core = require("apisix.core")
+              local PASSTHROUGH = @{PASSTHROUGH_LUA}
               local auth = core.request.header(ctx, "authorization")
-              local token = auth and auth:match("^[Bb]earer%s+(%S+)%s*$")
-              if token then
-                core.request.set_header(ctx, "x-api-key", token)
-                core.request.set_header(ctx, "authorization", nil)
+              core.request.set_header(ctx, "x-lab-target", nil)   -- never trust it from the client
+              if PASSTHROUGH then
+                -- Claude models go to api.anthropic.com with the client's own token
+                -- (traffic-split + serverless-post-function below); GLM models go to MaaS.
+                local body = core.request.get_body(nil, ctx)
+                local ok, req = pcall(core.json.decode, body or "")
+                local model = ok and type(req) == "table" and req.model
+                if type(model) == "string" and model:sub(1, 7) == "claude-" then
+                  ctx.lab_target = "anthropic"
+                  ctx.lab_client_auth = auth
+                  core.request.set_header(ctx, "x-lab-target", "anthropic")
+                end
               end
+              local key = core.request.header(ctx, "x-lab-key") or core.request.header(ctx, "x-api-key")
+              if not key and auth then
+                key = auth:match("^[Bb]earer%s+(%S+)%s*$")
+              end
+              core.request.set_header(ctx, "x-lab-key", nil)
+              if key then
+                core.request.set_header(ctx, "x-api-key", key)
+              end
+              core.request.set_header(ctx, "authorization", nil)
             end
       key-auth:
         header: x-api-key
@@ -53,6 +75,7 @@ routes:
         headers:
           set: @{HEADERS_SET}
 @{HEADERS_REMOVE}
+@{PASSTHROUGH_PLUGINS}
       file-logger:
         path: /usr/local/apisix/logs/lab/requests.log
         # With log_format set, APISIX 3.11 ignores include_req_body/max_req_body_bytes and

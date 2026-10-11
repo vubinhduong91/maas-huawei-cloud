@@ -72,6 +72,55 @@ def lab_mode():
     return mode
 
 
+def passthrough_enabled():
+    return os.environ.get("ANTHROPIC_PASSTHROUGH", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Requests whose body "model" starts with "claude-" leave through this upstream with the
+# client's own Anthropic token (e.g. a Claude subscription); everything else goes to MaaS.
+ANTHROPIC_UPSTREAM = """\
+  - id: anthropic
+    type: roundrobin
+    scheme: https
+    pass_host: rewrite
+    upstream_host: api.anthropic.com
+    nodes:
+      - host: api.anthropic.com
+        port: 443
+        weight: 1
+    timeout:
+      connect: 10
+      send: 600
+      read: 600"""
+
+PASSTHROUGH_PLUGINS = """\
+      traffic-split:
+        rules:
+          - match:
+              - vars:
+                  - ["http_x_lab_target", "==", "anthropic"]
+            weighted_upstreams:
+              - upstream_id: anthropic
+                weight: 1
+      serverless-post-function:
+        phase: before_proxy
+        functions:
+          - |
+            return function(conf, ctx)
+              -- Runs after proxy-rewrite: for Claude models undo the MaaS rewrite.
+              -- Restore the client's token and original path, drop MaaS / lab headers.
+              if ctx.lab_target ~= "anthropic" then
+                return
+              end
+              local core = require("apisix.core")
+              core.request.set_header(ctx, "authorization", ctx.lab_client_auth)
+              for _, name in ipairs({"x-api-key", "x-lab-target", "x-lab-consumer", "x-lab-request-id"}) do
+                core.request.set_header(ctx, name, nil)
+              end
+              ctx.var.upstream_uri = ctx.var.request_uri
+            end"""
+
+
 def render(redacted):
     scheme, host, port, prefix = parse_base_url(env("MAAS_BASE_URL"))
     mode = lab_mode()
@@ -82,7 +131,9 @@ def render(redacted):
         # the tap records and strips x-lab-* before forwarding, so MaaS sees mode A bytes.
         node_scheme, node_host, node_port = "http", "tap", 9090
         lab_headers = {"X-Lab-Consumer": "$consumer_name", "X-Lab-Request-Id": "$request_id"}
-    print(f"render: LAB_MODE={mode}, APISIX upstream {node_scheme}://{node_host}:{node_port}",
+    passthrough = passthrough_enabled()
+    print(f"render: LAB_MODE={mode}, APISIX upstream {node_scheme}://{node_host}:{node_port}, "
+          f"claude-* passthrough to api.anthropic.com: {'on' if passthrough else 'off'}",
           file=sys.stderr)
     api_key = REDACTED if redacted else env("MAAS_API_KEY")
     auth_header = env("MAAS_AUTH_HEADER")
@@ -113,6 +164,9 @@ def render(redacted):
         REGEX_URI=json.dumps(["^/v1/(.*)$", f"{prefix}/v1/$1"]),
         HEADERS_SET=json.dumps({auth_header: auth_value, **lab_headers}),
         HEADERS_REMOVE=headers_remove,
+        PASSTHROUGH_LUA="true" if passthrough else "false",
+        ANTHROPIC_UPSTREAM=ANTHROPIC_UPSTREAM if passthrough else "",
+        PASSTHROUGH_PLUGINS=PASSTHROUGH_PLUGINS if passthrough else "",
         CONSUMERS=consumers,
     )
 
