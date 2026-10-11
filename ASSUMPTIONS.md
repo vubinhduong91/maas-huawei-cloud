@@ -64,3 +64,10 @@ Ký hiệu: **[DOC]** có trong tài liệu Huawei, **[VERIFY]** cần kiểm ch
 - So body request N với N-1 (tap): ở **mọi** cặp, phần tử khác đầu tiên chỉ là marker `cache_control` dời xuống message cuối (hành vi chuẩn của Claude Code); **nội dung text trùng hoàn toàn** (3→4: 76.963 ký tự prefix chung; phiên 2, 1→2: 67.187 ký tự). Cùng một kiểu thay đổi lúc thì hit 95%, lúc thì hit 4% → miss ở request 4/9 và phiên 2 **không do phía client hay APISIX** gây ra; nghiêng về phía serving (routing sang instance khác, eviction). [VERIFY] với MaaS backend team.
 - `cache_read_input_tokens` luôn là bội số của 64 (832, 896, 2944, 15872...) → nhiều khả năng cache theo block 64 token. [VERIFY]
 - Lượng cache_read nhỏ ở đầu phiên (832–2.944 token) khớp với phần system prompt chung giữa các phiên.
+
+## Deploy lên ECS (2026-10-11)
+- [LAB] ECS `ap-southeast-1g` (cùng region với endpoint MaaS), Huawei Cloud EulerOS 3.0, 2 vCPU, 1,8 GB RAM + 2 GB swap, Docker CE 29.9 (repo CentOS 9) + Compose v5.6. Lab ở `/opt/maas-lab`, chạy **mode B** (`restart: unless-stopped`, Docker bật cùng máy).
+- [LAB] `LAB_BIND=127.0.0.1`: APISIX/tap/dashboard chỉ nghe trên loopback; security group chỉ cần cổng 22. Key dev trên ECS là chuỗi ngẫu nhiên (`sk-lab-...`), không dùng key mẫu.
+- [LAB] Dùng hằng ngày: `scripts/claude-maas.ps1` trên Windows mở `ssh -L 19080:127.0.0.1:9080` rồi chạy `claude` với `ANTHROPIC_*` chỉ cho tiến trình đó và `CLAUDE_CONFIG_DIR=%USERPROFILE%\.claude-maas` (không đụng Claude Code đăng nhập Anthropic). Cổng local 19080 vì 9080 trên Windows có thể bị dịch vụ khác chiếm (đã gặp: NahimicService).
+- Kiểm chứng trên ECS: `make probe` như WSL; `tap-test` 20/20, smoke 8/8, tap-smoke 10/10 (BIG_KB=64), body APISIX == tap 7/7; Claude Code từ Windows qua tunnel → consumer `dev_duong`, tap ghi session theo header.
+- Claude Code 2.1.296 cảnh báo `glm-5.3` không có trong model catalog → giả định context 200K cho auto-compact. [VERIFY] context window thật của GLM-5.x để đặt `CLAUDE_CODE_MAX_CONTEXT_TOKENS`.

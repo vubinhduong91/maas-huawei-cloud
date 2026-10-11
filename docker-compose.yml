@@ -33,7 +33,7 @@ services:
       - apisix-rendered:/rendered:ro
       - ./logs/apisix:/usr/local/apisix/logs/lab
     ports:
-      - "9080:9080"
+      - "${LAB_BIND:-0.0.0.0}:9080:9080"   # LAB_BIND=127.0.0.1 on a public server (use ssh -L)
     restart: unless-stopped
 
   # Recording proxy (Phase 2), only started for modes B and C (profile "tap").
@@ -49,7 +49,7 @@ services:
     volumes:
       - ./logs/tap:/logs
     ports:
-      - "9091:9091"
+      - "${LAB_BIND:-0.0.0.0}:9091:9091"
     restart: unless-stopped
 
   # ---- View-only dashboard (make dashboard), profile "dashboard" --------------------
@@ -73,7 +73,7 @@ services:
     volumes:
       - ./dashboard/config.yaml:/usr/local/apisix/conf/config.yaml:ro
     ports:
-      - "9180:9180"   # Admin API + UI at http://localhost:9180/ui/
+      - "${LAB_BIND:-0.0.0.0}:9180:9180"   # Admin API + UI at http://localhost:9180/ui/
     restart: unless-stopped
 
   dashboard-loader:
