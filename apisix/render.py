@@ -57,8 +57,8 @@ def parse_dev_keys(raw):
             continue
         name, sep, key = item.partition(":")
         name, key = name.strip(), key.strip()
-        if not sep or not key or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-            die(f"bad DEV_KEYS entry {item!r} (expected <name>:<key>, name in [A-Za-z0-9_-])")
+        if not sep or not key or not re.fullmatch(r"[A-Za-z0-9_]+", name):
+            die(f"bad DEV_KEYS entry {item!r} (expected <name>:<key>, name in [A-Za-z0-9_])")
         devs.append((name, key))
     if not devs:
         die("DEV_KEYS defines no developer")

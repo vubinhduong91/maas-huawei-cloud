@@ -87,7 +87,7 @@ fi
 if [[ -s "$LOG_FILE" ]] && python3 - "$LOG_FILE" "$DEV1_NAME" <<'EOF'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
-mine = [r for r in rows if r.get("consumer") == sys.argv[2] and r.get("status") == "200"]
+mine = [r for r in rows if r.get("consumer") == sys.argv[2] and str(r.get("status")) == "200"]
 print(f"    {len(rows)} log lines, {len(mine)} ok lines for {sys.argv[2]}")
 if not mine:
     sys.exit(1)

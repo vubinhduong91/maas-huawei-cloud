@@ -1,4 +1,4 @@
-# Template for conf/apisix.yaml. Placeholders use @{NAME} and are filled by render.py.
+# Template for conf/apisix.yaml. Placeholders use @@{NAME} and are filled by render.py.
 # The rendered file contains MAAS_API_KEY: it lives only in a docker volume.
 upstreams:
   - id: maas
@@ -31,7 +31,8 @@ routes:
             return function(conf, ctx)
               -- Claude Code sends "Authorization: Bearer <key>" with ANTHROPIC_AUTH_TOKEN
               -- and "x-api-key: <key>" with ANTHROPIC_API_KEY. key-auth reads a single
-              -- header, so copy the bearer token into x-api-key. Body is not touched.
+              -- header, so move the bearer token into x-api-key. The developer's
+              -- Authorization is dropped here; proxy-rewrite sets the MaaS one. Body is not touched.
               local core = require("apisix.core")
               if core.request.header(ctx, "x-api-key") then
                 return
@@ -40,6 +41,7 @@ routes:
               local token = auth and auth:match("^[Bb]earer%s+(%S+)%s*$")
               if token then
                 core.request.set_header(ctx, "x-api-key", token)
+                core.request.set_header(ctx, "authorization", nil)
               end
             end
       key-auth:
