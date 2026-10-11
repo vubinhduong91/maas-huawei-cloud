@@ -575,14 +575,23 @@ def main():
     ap.add_argument("--window-min", type=int, default=120,
                     help="how far back to look for a shared prefix (expected vs actual)")
     ap.add_argument("--env", type=Path, default=Path(".env"), help="prices: MAAS_PRICE_*_PER_M")
+    ap.add_argument("--labelled-only", action="store_true",
+                    help="only sessions labelled in --scenarios (drop smoke tests and ad-hoc traffic)")
+    ap.add_argument("--findings", type=Path, help="markdown appended at the end of report.md (Phase 6)")
     args = ap.parse_args()
     args.prices = maas_prices(args.env)
 
+    scenarios = load_scenarios(args.scenarios)
     recs = load_records(args.tap_dir, args.since, args.until)
-    rows = analyze(recs, load_scenarios(args.scenarios), args.window_min)
+    if args.labelled_only:
+        recs = [r for r in recs if r["session"] in scenarios]
+    rows = analyze(recs, scenarios, args.window_min)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     write_csv(rows, args.out_dir / "requests.csv")
     write_report(rows, args.out_dir / "report.md", args)
+    if args.findings:
+        with (args.out_dir / "report.md").open("a", encoding="utf-8") as f:
+            f.write("\n" + args.findings.read_text(encoding="utf-8"))
     s = group_stats(rows)
     print(f"analyze: {len(rows)} requests, {len({r['session'] for r in rows})} sessions, "
           f"weighted hit {pct(s['weighted_hit'])}%, serving-side suspects "

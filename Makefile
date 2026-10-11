@@ -12,7 +12,7 @@ ifneq ($(MODE),A)
 export COMPOSE_PROFILES := tap
 endif
 
-.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down analyze test-analyze scenario
+.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down analyze test-analyze scenario report
 
 # Call MaaS directly to verify auth header / count_tokens / model names.
 probe:
@@ -89,3 +89,8 @@ test-analyze:
 # Phase 5 scenarios (lab up in mode B): make scenario S=S2   |   make scenario S="S1 S4"   |   make scenario S=all
 scenario:
 	python3 scenarios/run.py $(S)
+
+# Phase 6: final report = labelled scenario sessions + docs/findings.md appended at the end.
+# make report ARGS="--since 2026-10-11T10:12"
+report:
+	python3 analyze.py --labelled-only --findings docs/findings.md $(ARGS)
