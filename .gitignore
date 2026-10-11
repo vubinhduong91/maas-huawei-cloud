@@ -5,3 +5,4 @@ __pycache__/
 sample-repo/
 .lab-claude/
 reports/
+sample-repo-*/
