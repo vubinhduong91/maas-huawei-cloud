@@ -52,7 +52,7 @@ EOF
 
 echo "== waiting for tap at $TAPC"
 for _ in $(seq 1 30); do
-  [[ "$(curl -s -o /dev/null -w '%{http_code}' "$TAPC/")" != "000" ]] && break
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' "$TAPC/__tap/health")" != "000" ]] && break
   sleep 1
 done
 

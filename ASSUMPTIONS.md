@@ -4,7 +4,7 @@ Ký hiệu: **[DOC]** có trong tài liệu Huawei, **[VERIFY]** cần kiểm ch
 
 ## Môi trường
 - [LAB] Lab chạy trên Linux VM/ECS (Docker Compose v2, Python 3.11+, bash, curl). Code được viết trên Windows; `.gitattributes` ép LF.
-- [VERIFY] Claude Code trên máy viết code: **2.1.296**. Phiên bản trên VM chạy lab phải ghi lại ở Phase 3 (`claude --version`).
+- Claude Code dùng trong lab: **2.1.296** (cài bằng native installer trong WSL, `~/.local/bin/claude`), trùng với bản trên máy viết code.
 
 ## Huawei MaaS (nguồn: [Claude Code guide](https://support.huaweicloud.com/intl/en-us/model-call-maas/model-call-060.html), [Anthropic-compatible API](https://support.huaweicloud.com/intl/en-us/model-call-maas/model-call-022.html), tra cứu ngày 2026-10-11)
 - [DOC] Endpoint: `https://api-ap-southeast-1.modelarts-maas.com/anthropic/v1/messages`, chỉ hỗ trợ region CN-Hong Kong.
@@ -49,3 +49,18 @@ Ký hiệu: **[DOC]** có trong tài liệu Huawei, **[VERIFY]** cần kiểm ch
 
 ## Dashboard (xem cấu hình)
 - [LAB] `make dashboard` dựng một APISIX **3.14.1** riêng (có UI tích hợp từ 3.13, cần Admin API + etcd) tại `http://localhost:9180/ui/`, rồi nạp vào đó cấu hình lab đang chạy (mode A/B tự nhận theo container tap) với **key đã che**. Đây là bản sao chỉ để xem: không nằm trên đường request, sửa trong UI không đổi gateway lab (vẫn là 3.11 standalone, cấu hình nằm trong git). Khác version 3.11 ↔ 3.14 chỉ ảnh hưởng hiển thị.
+
+## Phase 3: Claude Code thật qua lab (2026-10-11)
+- [LAB] Repo mẫu: **Reaparr** (`Reaparr/Reaparr`, nhánh `dev`, commit `3f0246356944`, GPL-3.0), .NET 10 + Nuxt 4/Vue 3 + TS, SQLite, TUnit/Vitest/Cypress; 2.400 file (1.549 `.cs`, 216 `.vue`, 290 `.ts`). Chọn vì gần stack mục tiêu (Vue + .NET 8/9/10), tiếng Anh, **chạy được** (đã build bằng `docker/Dockerfile` và chạy ở :7000) để sau còn test thêm tính năng/sửa bug/scan. Khác workload mục tiêu ở nghiệp vụ (tải media). Repo lab không chứa code Reaparr: `scripts/prepare-sample-repo.sh` clone đúng commit vào `sample-repo/`.
+- [LAB] `CLAUDE.md` do lab viết (`sample/CLAUDE.md`), commit trên nhánh `lab` để `git status` sạch. `AGENTS.md` và `.agents/skills` của Reaparr giữ nguyên nhưng **không** import: chúng đòi hỏi question tool (không trả lời được ở `claude -p`), `trash`, `dotnet-test-mcp` (lab không có). Claude Code 2.1.296 không tự nạp `AGENTS.md`.
+- [LAB] `scripts/run-claude.sh <dev> <A|B|C> [--background] [args]`: mỗi dev một `CLAUDE_CONFIG_DIR` riêng (`.lab-claude/<dev>`) để cấu hình/đăng nhập của người chạy không lọt vào request; đặt `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_{OPUS,SONNET}_MODEL`=main, `ANTHROPIC_DEFAULT_HAIKU_MODEL`=fast, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (trừ `--background`). Ghi mỗi lần chạy vào `logs/runs.jsonl`.
+- Kiểm chứng biến môi trường: request mang `model` = `ANTHROPIC_MODEL` (glm-5.3), header `Authorization: Bearer <dev key>` được APISIX chấp nhận. Claude Code in cảnh báo `unrecognized_model` cho glm-5.3 nhưng vẫn chạy.
+- Claude Code gửi: header **`X-Claude-Code-Session-Id`** và `metadata.user_id` = JSON `{"device_id","account_uuid":"","session_id"}` (cùng session id) → tap dùng header. `user-agent: claude-cli/2.1.296 (external, sdk-cli)`; `anthropic-beta` gồm `claude-code-20250219, interleaved-thinking, context-management, prompt-caching-scope-2026-01-05, ...`. Body: `system` 3 block, 20–21 tools, **3 marker `cache_control`**, path `/v1/messages?beta=true`. Không thấy gọi `count_tokens`.
+- `--background` (bỏ `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`) với `claude -p`: không thấy request haiku-tier nào; danh sách tools có 21 thay vì 20. Traffic nền chủ yếu ở chế độ interactive → đo ở S7.
+
+### Quan sát cache đầu tiên (chưa phải kết luận, cần S1/S2 để có đủ mẫu)
+- Phiên 1 (13 request, 15K → 31K token): weighted hit **81,3%** (`261120/321315`). Request 1 = 5,2% (đầu phiên), request 4 = **4,4%**, request 9 = 63,8%, còn lại 88–98%.
+- Phiên 2 (2 request): request 2 chỉ hit **15,8%** dù gửi ngay sau request 1.
+- So body request N với N-1 (tap): ở **mọi** cặp, phần tử khác đầu tiên chỉ là marker `cache_control` dời xuống message cuối (hành vi chuẩn của Claude Code); **nội dung text trùng hoàn toàn** (3→4: 76.963 ký tự prefix chung; phiên 2, 1→2: 67.187 ký tự). Cùng một kiểu thay đổi lúc thì hit 95%, lúc thì hit 4% → miss ở request 4/9 và phiên 2 **không do phía client hay APISIX** gây ra; nghiêng về phía serving (routing sang instance khác, eviction). [VERIFY] với MaaS backend team.
+- `cache_read_input_tokens` luôn là bội số của 64 (832, 896, 2944, 15872...) → nhiều khả năng cache theo block 64 token. [VERIFY]
+- Lượng cache_read nhỏ ở đầu phiên (832–2.944 token) khớp với phần system prompt chung giữa các phiên.

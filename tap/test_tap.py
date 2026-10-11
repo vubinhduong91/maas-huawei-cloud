@@ -185,7 +185,14 @@ async def main():
     check("seq per session", sorted(p.name for p in (log_dir / "sess-seq").glob("*.json")) ==
           ["0001.json", "0002.json"])
 
-    # 6. no secret on disk
+    # 6. health probe answers without forwarding or recording
+    before_seen, before_recs = len(seen), len(records(log_dir))
+    async with http.get(f"http://127.0.0.1:{C_PORT}/__tap/health") as r:
+        status = r.status
+    check("health probe: 200, not forwarded, not recorded", status == 200 and
+          len(seen) == before_seen and len(records(log_dir)) == before_recs)
+
+    # 7. no secret on disk
     blob = "".join(p.read_text() for p in log_dir.rglob("*.json"))
     leaked = [s for s in (MAAS_KEY, "key-alice-test", "key-bob-test") if s in blob]
     check("no MaaS/dev key in records", not leaked, leaked)

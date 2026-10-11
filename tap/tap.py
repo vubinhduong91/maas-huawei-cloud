@@ -38,6 +38,7 @@ HOP_BY_HOP = {
 SECRET_HEADERS = {"authorization", "x-api-key"}
 LAB_HEADER_PREFIX = "x-lab-"
 SESSION_HEADER = "x-claude-code-session-id"
+HEALTH_PATH = "/__tap/health"
 REDACTED = "<redacted>"
 MAX_PARSE_BYTES = 8 * 1024 * 1024   # non-stream bodies kept for usage parsing
 ERROR_EXCERPT = 2000
@@ -256,6 +257,8 @@ def write_record(cfg, record):
 
 def make_handler(cfg, mode, http, sessions):
     async def handle(request: web.Request):
+        if request.path == HEALTH_PATH:          # liveness probe, never forwarded or recorded
+            return web.Response(text="ok")
         t_arrival = time.monotonic()
         received = [(k.decode("latin-1"), v.decode("latin-1")) for k, v in request.raw_headers]
         body = await request.read()
