@@ -1,0 +1,9 @@
+# S6: grow the context fast, compact, then keep working. "/compact" is sent as its own turn.
+Read src/Data/ReaparrDbContext.cs completely and list every DbSet it declares.
+Read the three largest .cs files under src/Application and summarise what each one is responsible for.
+Read the three largest .vue files under src/AppHost/ClientApp/src and summarise each component.
+Read the main SignalR hub in src/SignalR and every class it depends on directly; summarise the message flow.
+/compact
+Based on what you know now, which part of the code base would be most risky to change, and why?
+Find one place where error handling looks inconsistent with the rest of the backend and show it.
+Propose a small refactoring for that place and show the diff you would apply, without applying it.

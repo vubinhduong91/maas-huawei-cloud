@@ -1,0 +1,6 @@
+# Read-only turns (S3 first prompt, S5 parallel developers, seed). One prompt per line.
+Summarize what this repository does and how it is structured, in at most 8 bullet points.
+Find how the application talks to Plex: which project, which main classes, and how requests are authenticated.
+Explain how background jobs are scheduled (Quartz.NET): where jobs are registered and list three of them with what they do.
+How does the front-end receive live progress updates from the backend? Name the SignalR hub and the client-side store involved.
+Which settings does a user control, where are they stored, and how does the API expose them?

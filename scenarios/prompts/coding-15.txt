@@ -1,0 +1,16 @@
+# S2: one session, 15 ordinary coding turns on sample-repo (Reaparr). One prompt per line.
+Give me a short overview of how this repository is organised: backend projects, front-end location, and where the tests live.
+Find where the download task entities are defined in src/Domain and list their main properties.
+Show me how a download task is created: which PublicAPI endpoint receives the request and which Application handler processes it.
+Read that handler and explain step by step what it does, including validation and persistence.
+Which EF Core configuration maps the download task entity? Show the relevant file and explain any non-obvious mapping.
+Add a nullable string property `Note` (max 500 characters) to the download task entity and its EF Core configuration. Do not create a migration yet.
+Update the DTO returned by the download-task endpoints so it also exposes `Note`, and make sure the mapping fills it.
+Add a unit test in tests/UnitTests that checks the mapping copies `Note` from the entity to the DTO. Follow the style of the existing tests in that project.
+Now look at the front-end: find the TypeScript type used for download tasks in src/AppHost/ClientApp and add an optional `note` field.
+Show the `note` in the download task details view if it is set; keep the existing component style.
+Review all the changes made so far with git diff and point out anything inconsistent or missing.
+Fix the issues you found in your review.
+Is there a place where download tasks are created from the UI where a note could be entered? Describe the minimal change needed, but do not implement it.
+Write a short CHANGELOG-style summary of the `Note` feature for a pull request description.
+List every file you changed in this session and confirm none of them break the existing naming conventions.

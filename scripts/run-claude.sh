@@ -39,7 +39,7 @@ elif [[ "$MODE" != A && "$tap_up" == 0 ]]; then
   echo "error: mode $MODE needs the tap (run: make up MODE=$MODE)" >&2; exit 2
 fi
 
-SAMPLE="$LAB/sample-repo"
+SAMPLE="${SAMPLE_REPO:-$LAB/sample-repo}"   # S5 gives each dev its own copy
 [[ -d "$SAMPLE/.git" ]] || { echo "missing sample-repo/ (run: scripts/prepare-sample-repo.sh)" >&2; exit 2; }
 
 export CLAUDE_CONFIG_DIR="$LAB/.lab-claude/$DEV"
@@ -58,7 +58,7 @@ export ANTHROPIC_DEFAULT_OPUS_MODEL="$MAAS_MODEL_MAIN"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$MAAS_MODEL_MAIN"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MAAS_MODEL_FAST"
 # Claude Code does not know GLM models and would assume a 200K window (auto-compact).
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${MAAS_MAX_CONTEXT_TOKENS:-1000000}"
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${LAB_MAX_CONTEXT_TOKENS:-${MAAS_MAX_CONTEXT_TOKENS:-1000000}}"   # S6 forces a small window
 if [[ $BACKGROUND == 0 ]]; then
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 else
