@@ -42,6 +42,37 @@ def agent_orders(reqs):
     return len(orders)
 
 
+def reordered_arrays(a, b, path=""):
+    """Paths of arrays whose elements are the same but in another order (or other length)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        for k in a:
+            if k in b:
+                yield from reordered_arrays(a[k], b[k], f"{path}.{k}")
+    elif isinstance(a, list) and isinstance(b, list):
+        ca = [ko.dumps(x, sort_keys=True) for x in a]
+        cb = [ko.dumps(x, sort_keys=True) for x in b]
+        if len(a) != len(b) or (ca != cb and sorted(ca) == sorted(cb)):
+            yield path
+        else:
+            for i, (x, y) in enumerate(zip(a, b)):
+                yield from reordered_arrays(x, y, f"{path}[{i}]")
+
+
+def content_changes(a, b, path=""):
+    """Value changes other than key order (added/removed keys, changed scalars)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        for k in a.keys() | b.keys():
+            if k not in a or k not in b:
+                yield f"{'added' if k in b else 'removed'} {path}.{k}"
+            else:
+                yield from content_changes(a[k], b[k], f"{path}.{k}")
+    elif isinstance(a, list) and isinstance(b, list):
+        for i, (x, y) in enumerate(zip(a, b)):
+            yield from content_changes(x, y, f"{path}[]")
+    elif a != b or type(a) is not type(b):
+        yield f"value {path}: {str(a)[:20]} -> {str(b)[:20]}"
+
+
 def hit(reqs):
     rd = tot = 0
     for r in reqs:
@@ -72,6 +103,15 @@ def main():
         alpha = sum(d["new_alphabetical"] for d in tool_drifts)
         layers = sorted({layer for p in pairs for layer in p.get("layers", [])}
                         | {k for k, v in (ps.get("drift_layers") or {}).items() if v})
+        by_pre = {r["id"]: r for r in pre}
+        by_post = {r["id"]: r for r in post}
+        arrays, changes = 0, {}
+        for p in pairs:
+            a = json.loads(by_pre[p["req_id"]]["fwd_body"])
+            b = by_post[p.get("post_id", p["req_id"])]["obj"]
+            arrays += any(True for _ in reordered_arrays(a, b))
+            for c in set(content_changes(a, b)):
+                changes[c] = changes.get(c, 0) + 1
         g = gateways.get(label, {})
         rows.append({
             "label": label, "profile": g.get("profile", label.split("-")[1]),
@@ -86,6 +126,7 @@ def main():
             "agent_orders_pre": agent_orders(pre), "agent_orders_post": agent_orders(post),
             "hit_pre": hit(pre), "hit_post": hit(post),
             "prompts": f"{s.get('prompts_done')}/{s.get('prompts_total')}", "session": sid,
+            "arrays_reordered": arrays, "changes": changes,
         })
     out = ["# Key-order lab Phase 4: Claude Code through APISIX (tap-pre → APISIX → tap-post → MaaS)", "",
            "One short session per row (variant 2b: built-in + lab-tfs MCP, `scenarios/prompts/keyorder-short.txt`). "
@@ -109,12 +150,18 @@ def main():
         ("type 1 % (same session)", PRODUCTION["type1_pct"], lambda r: r["type1_pct"]),
         ("layers", PRODUCTION["layers"], lambda r: ", ".join(r["layers"]) or "none"),
         ("tools affected", PRODUCTION["scope"], lambda r: "see type 1" if r["type1"] else "none"),
-        ("arrays kept", PRODUCTION["arrays"], lambda r: "no" if r["verdicts"].get("content differs") else "yes"),
+        ("arrays kept", PRODUCTION["arrays"],
+         lambda r: "yes" if not r["arrays_reordered"] else f"no ({r['arrays_reordered']}/{r['pairs']})"),
         ("new order alphabetical", PRODUCTION["alphabetical"], lambda r: r["alpha"]),
         ("Agent key orders seen at post", "several", lambda r: str(r["agent_orders_post"])),
     ]
     for name, prod, f in sig:
         out.append(f"| {name} | {prod} | " + " | ".join(f(r) for r in rows) + " |")
+    out += ["", "## Content changes other than key order (pairs affected)", ""]
+    for r in rows:
+        if r["changes"]:
+            out.append(f"- {r['profile']} w{r['label'].rsplit('-w', 1)[-1]}: " + "; ".join(
+                f"{c} ({n})" for c, n in sorted(r["changes"].items(), key=lambda x: -x[1])[:6]))
     out += ["", "Sessions: " + ", ".join(f"{r['label']} `{r['session']}`" for r in rows)]
     path = LAB / "reports" / "keyorder-phase4.md"
     path.parent.mkdir(parents=True, exist_ok=True)
