@@ -62,6 +62,8 @@ services:
       # 1 = raw files for every request, not only those tagged by tap-pre (needed when the
       # gateway drops X-Lab-Req-Id, e.g. ai-proxy in profile P1).
       TAP_RAW_ALL: ${TAP_POST_RAW_ALL:-0}
+      # Key-order lab Phase 5: http://replay-echo:9099 instead of MaaS (no tokens spent).
+      TAP_UPSTREAM_ORIGIN: ${TAP_POST_UPSTREAM_ORIGIN:-}
     user: "${LAB_UID:-1000}:${LAB_GID:-1000}"   # log files owned by the host user
     volumes:
       - ./logs/tap:/logs
@@ -84,11 +86,24 @@ services:
       TAP_MODE: ${TAP_PRE_MODE:-passthrough}
       TAP_SHUFFLE_TOOL_INDEX: ${TAP_PRE_SHUFFLE_TOOL_INDEX:-0}
       TAP_SHUFFLE_SEED: ${TAP_PRE_SHUFFLE_SEED:-}
+      TAP_UPSTREAM_ORIGIN: ${TAP_PRE_UPSTREAM_ORIGIN:-}   # with TAP_PRE_UPSTREAM=maas
     user: "${LAB_UID:-1000}:${LAB_GID:-1000}"
     volumes:
       - ./logs/raw:/raw
     ports:
       - "${LAB_BIND:-0.0.0.0}:9001:9001"
+    restart: unless-stopped
+
+  # Key-order lab Phase 5: echo upstream of scenarios/replay/replay.py. Records hashes and
+  # key-order signatures of every body it receives (logs/replay/echo.jsonl), answers OK.
+  replay-echo:
+    image: python:3.11-slim
+    profiles: ["keyorder"]
+    command: ["python", "-u", "/app/replay.py", "echo", "--port", "9099", "--log", "/logs/echo.jsonl"]
+    user: "${LAB_UID:-1000}:${LAB_GID:-1000}"
+    volumes:
+      - ./scenarios/replay:/app:ro
+      - ./logs/replay:/logs
     restart: unless-stopped
 
   # ---- View-only dashboard (make dashboard), profile "dashboard" --------------------
