@@ -147,3 +147,24 @@ Lab mới: tái hiện việc thứ tự key trong `tools[].input_schema.propert
 - Mỗi session có đúng một `POST /v1/messages/count_tokens` (Claude Code đếm token một file lớn, `data-contracts.ts`) → MaaS 404, như đã ghi ở Phase 1 của lab cache. Analyzer bỏ qua các request này.
 - Chi phí: 7,72M input token (≈ 2,30 + 2,55 + 2,87M; mỗi session < 3M), cache hit 93–95%. Với giá cận trên ($1,40/M, tính cache read bằng giá input) thì ≤ ~$11; thực tế thấp hơn vì cache read rẻ hơn.
 - Smoke trước khi chạy cho thấy request đầu của một prompt mới có lúc hit rất thấp (832/19K token) dù lệch đầu tiên chỉ ở message mới thêm. Đây cũng là kiểu miss phía serving đã ghi ở lab cache, không liên quan đến thứ tự key.
+
+## Lab key-order drift — Phase 3: tác động cache theo vị trí drift (2026-10-12, run `20261012-075214`)
+- [LAB] `scenarios/keyorder_cache.py`: replay một body Claude Code thật của Phase 2 (`46bdac82…`, session 2b-s1, **56.766 token**, 29 tools, 158 messages) thẳng tới MaaS qua tap-pre (`TAP_PRE_UPSTREAM=maas`, passthrough). Mỗi lượt có 9 request cùng salt: base, base lại, đổi `properties` ở tool 0 (`Agent`), tool giữa (14 `ScheduleWakeup`), `TaskUpdate` (21, thêm ngoài spec để so với production), tool cuối (28, MCP `tfs_update_workitem`), đổi thứ tự top-level, đổi key một content block giữa `messages` (`messages[78].content[0]`, tool_result), rồi base lại (control). Mỗi biến thể = base + **một** thay đổi; hoán vị lấy từ seed của lượt (199767..199769, ghi trong `logs/keyorder/phase3-*.jsonl`). `max_tokens=256` cho mọi request (không thuộc prompt).
+- [LAB] **Salt** `[lab-salt <hex>] ` đặt ở đầu `tools[0].description`: MaaS đặt tools trước system và messages (lab cache, S1), nên đây là chỗ sớm nhất là chữ thật của prompt; salt mới mỗi lượt → các lượt không dùng lại cache của nhau. **Expected** = prefix chung (render tools → system → messages, JSON compact giữ thứ tự key) với request trước tốt nhất, quy ra token bằng tỉ lệ ký tự/token của request warm-up, làm tròn xuống 64 — **xấp xỉ**: trong phần tools nó thấp hơn thực tế ~12% (JSON schema nhiều token hơn trung bình).
+- **Kết quả** (cache_read thực tế, 3 lượt; "sạch" = lượt rơi vào instance giữ base):
+
+| Vị trí drift | Lượt 1 | Lượt 2 | Lượt 3 | Giá trị sạch | % của 56,8K | Expected (xấp xỉ) |
+|---|---:|---:|---:|---:|---:|---:|
+| base lại | 0 | 56.704 | 56.704 | 56.704 | 99,9% | 56.704 |
+| tool 0 (`Agent`) | 448 | 0 | 448 | **448** | **0,8%** | 384 |
+| tool giữa (14/29) | 8.384 | 8.448 | 0 | 8.384–8.448 | 14,8% | 7.296 |
+| `TaskUpdate` (21/29) | 12.480 | 448 | 8.384 | **12.480** | **22,0%** | 11.072 |
+| tool cuối (28/29, MCP) | 14.976 | 12.480 | 14.976 | **14.976** | **26,4%** | 13.184 |
+| top-level keys | 56.704 | 14.976 | 56.704 | **56.704** | 99,9% | 56.704 |
+| content block giữa messages | 56.704 | 56.704 | 12.480 | **56.704** | 99,9% | 32.704 nếu thứ tự có ý nghĩa |
+| base lại (control) | 56.704 | 56.704 | 56.704 | 56.704 | 99,9% | 56.704 |
+
+- **Drift thứ tự key trong `tools[k].input_schema.properties` cắt cache ngay tại tool k**: chỉ giữ được prefix gồm các tool đứng trước, **mất toàn bộ system + hội thoại** vì MaaS render tools đầu tiên. Đổi ở tool 0 → còn 448 token (khớp "vài trăm token" của báo cáo production). Đổi ở tool cuối → chỉ còn ~26% ở body này. Production báo 36,5% khi `TaskUpdate` là tool cuối: cùng cơ chế, tỉ lệ khác vì tỉ trọng phần tools/hội thoại khác (ở đây hội thoại ~42K/56,8K token). → **H4 được xác nhận**.
+- **MaaS không nhạy với thứ tự key top-level và thứ tự key trong content block**: khi request rơi vào instance có cache của base, hit 56.704/56.766 dù thứ tự đã đổi (content block ở message 78 mà nếu thứ tự có ý nghĩa thì tối đa chỉ ~32,7K). Khớp nhận định của báo cáo production: chỉ thứ tự trong `tools` (JSON schema được render nguyên văn) mới làm hỏng cache. [VERIFY] `tool_use.input` không đo ở đây.
+- **Nhiễu routing được giải thích hoàn toàn**: mọi giá trị "lệch" đều **bằng đúng** prefix chung với một request trước khác trong lượt (ví dụ lượt 2 `TaskUpdate` = 448 = prefix chung với biến thể tool 0; lượt 3 content block = 12.480 = prefix chung với biến thể `TaskUpdate`); 0 = rơi vào instance chưa có gì. Không có giá trị nào trái logic prefix. Đây lại là dấu hiệu nhiều instance, cache riêng, không có session affinity (như lab cache), và là lý do cần nhiều lượt.
+- Chi phí: 27 request ≈ 1,53M input token (dưới giới hạn 3M; cận trên ≈ $2,1).
