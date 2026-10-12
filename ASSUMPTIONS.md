@@ -128,3 +128,22 @@ Lab mới: tái hiện việc thứ tự key trong `tools[].input_schema.propert
 - **End-to-end trên ECS** (11 request `glm-5.3`, body ~1K token có tab và khoảng trắng lạ, 4 tools gồm một tool kiểu MCP 8 properties): `X-Lab-Req-Id` **đi qua APISIX tới tap-post** (đã xác minh), 11/11 cặp pre/post **giống hệt từng byte** (APISIX lab không đụng body, kể cả whitespace). Positive control: shuffle tool cuối (3 request) và tool đầu (3 request) → analyzer báo **4/4** lần chuyển là loại 1, đúng tool (`3/4 TaskUpdate`, `0/4 Bash`), đúng dict `tools[k].input_schema.properties`, offset byte lệch đầu tiên nằm trong dict đó; các phiên passthrough/canon: 0.
 - **Baseline trên log tap có sẵn** (Phase 3–5 + dùng hằng ngày, không tính request test hôm nay): **360 lần chuyển / 31 phiên, 0 drift thứ tự key ở cả 4 tầng**. 2 lần đổi toolset (loại 2) đều ở phiên Claude Code dùng hằng ngày: request 1 không có tools (request phụ), request 3 nạp thêm 8 tool MCP. Tức là với Claude Code 2.1.2xx + APISIX lab, chưa thấy hiện tượng như báo cáo production.
 - [VERIFY] Body ~1K token gửi lặp lại y hệt gần như không bao giờ được cache (`cache_read=0` ở 10/11 request, một lần 384). Có thể MaaS có ngưỡng độ dài tối thiểu để cache. Không ảnh hưởng Phase 3 (spec dùng body 40–60K token) nhưng không dùng body ngắn để đo cache.
+
+## Lab key-order drift — Phase 2: baseline phía client (2026-10-12)
+- [LAB] Đường đi: `Claude Code 2.1.296 (headless trên ECS) → tap-pre (TAP_PRE_UPSTREAM=maas, passthrough) → MaaS glm-5.3`, không qua APISIX. `scripts/run-claude.sh` có thêm mode `P` (base URL = tap-pre :9001). `scenarios/session_script.sh <2a|2b> [label]` (`make keyorder-session V=...`): prompt cố định ở `scenarios/prompts/keyorder-session.txt` (15 prompt; 2b thêm 3 dòng `mcp:` = 18), buộc dùng Read/Grep/Glob/Edit/Bash/TaskCreate/TaskUpdate/Agent; prompt đầu mở session mới, các prompt sau dùng `--continue`. Repo là bản clone riêng `sample-repo-keyorder`, reset về cùng commit trước mỗi session. Sau mỗi prompt script đếm token và chạy `keyorder.py`; dừng khi có drift loại 1 (exit 3) hoặc session vượt 3M input token (exit 4). Danh sách session ở `logs/keyorder/sessions.jsonl`.
+- [LAB] Đã xác minh: với 2.1.296, `claude -p --continue` **giữ nguyên session id** (`X-Claude-Code-Session-Id`) qua mọi prompt (0 lần mở session mới ở cả 3 session). Request của subagent mang cùng session id nhưng toolset khác (24/27/18 tool so với 26/29), nên analyzer tách thành nhóm riêng.
+- [LAB] MCP `lab-tfs` (`scenarios/mcp/lab_tfs.py`, stdio, stdlib): 3 tool, `tfs_update_workitem` có 12 properties (có `custom_fields` kiểu object lồng properties). Mỗi lần `claude -p` khởi động lại server, nên MCP server bị **restart trước mỗi prompt** (18 lần/session), mạnh hơn yêu cầu "restart giữa hai session" của spec. Trạng thái work item lưu ở file JSON để giữ qua các lần restart. Tool MCP đã được gọi thật: work item 4211 được cập nhật 4 lần ở session 1 và 3 lần ở session 2, kết thúc ở trạng thái Resolved.
+- **Kết quả** (`reports/keyorder-phase2.md` trên ECS):
+
+| Session | Prompt | Request | Lần so sánh N vs N-1 | Loại 1 | Drift ở 4 tầng | Loại 2 | Cache hit |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2a (chỉ built-in) | 15/15 | 67 | 64 | 0 | 0 | 4 | 93,3% |
+| 2b session 1 (+ lab-tfs) | 18/18 | 72 | 69 | 0 | 0 | 4 | 94,3% |
+| 2b session 2 (+ lab-tfs) | 18/18 | 79 | 76 | 0 | 0 | 4 | 94,7% |
+| **Tổng** | | **215** (+3 count_tokens) | **209** | **0 (0%)** | **0** | 12 | |
+
+- **Loại 1 = 0/209 = 0%**, đúng kỳ vọng của báo cáo production. Không có thay đổi thứ tự key ở top-level, content block, tools (built-in lẫn MCP) hay `tool_use.input`. Claude Code và MCP server **không** gây drift trong lab, nên dữ liệu không ủng hộ H1/H2.
+- 12 lần loại 2 đều là lúc chuyển sang request của subagent rồi quay về (subagent có ít tool hơn, ví dụ bỏ `ScheduleWakeup`/`Workflow`, hoặc bỏ cả nhóm Task*/Cron*). Đây không phải tool được thêm/bớt giữa phiên chính.
+- Mỗi session có đúng một `POST /v1/messages/count_tokens` (Claude Code đếm token một file lớn, `data-contracts.ts`) → MaaS 404, như đã ghi ở Phase 1 của lab cache. Analyzer bỏ qua các request này.
+- Chi phí: 7,72M input token (≈ 2,30 + 2,55 + 2,87M; mỗi session < 3M), cache hit 93–95%. Với giá cận trên ($1,40/M, tính cache read bằng giá input) thì ≤ ~$11; thực tế thấp hơn vì cache read rẻ hơn.
+- Smoke trước khi chạy cho thấy request đầu của một prompt mới có lúc hit rất thấp (832/19K token) dù lệch đầu tiên chỉ ở message mới thêm. Đây cũng là kiểu miss phía serving đã ghi ở lab cache, không liên quan đến thứ tự key.
