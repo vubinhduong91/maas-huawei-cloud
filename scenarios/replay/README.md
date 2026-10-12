@@ -14,7 +14,7 @@ breaks prompt caching for the model behind it.
   sha256 of the body with sorted keys, and sha256 hashes of the *key-order skeleton*
   (the order of keys with every value removed) for the whole body, the top level, the
   `tools` array, each tool (by position) and `messages`. No text, tool names or key names.
-- Two booleans: whether the body contains `9007199254741000.0` (how lua-cjson prints
+- Two booleans: whether the body contains `9.007199254741e+15` (how lua-cjson prints
   `9007199254740991`, a number Claude Code puts in tool schemas: a fingerprint of a
   cjson re-encode) and whether a top-level `stream_options` was added.
 

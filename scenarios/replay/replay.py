@@ -66,8 +66,8 @@ def signatures(body):
             tool_orders=[sha(dumps(skeleton(t)))[:12] for t in tools],
             messages_order=sha(dumps(skeleton(msgs))),
             # lua-cjson prints numbers with 14 significant digits: 9007199254740991 (a value
-            # Claude Code puts in tool schemas) comes out as 9007199254741000.0.
-            cjson_number=b"9007199254741000.0" in body,
+            # Claude Code puts in tool schemas) comes out as 9.007199254741e+15.
+            cjson_number=b"9.007199254741e+15" in body,
             # Added by some AI gateway plugins (APISIX ai-proxy) to streamed requests.
             stream_options="stream_options" in obj,
         )
