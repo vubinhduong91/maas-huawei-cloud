@@ -206,3 +206,25 @@ Lab mới: tái hiện việc thứ tự key trong `tools[].input_schema.propert
 - **Bằng chứng quyết định**: cùng một body gửi y hệt, gateway không đụng body (P0) giao tới upstream **đúng 1 dạng byte** trong mọi điều kiện (concurrency 8, reload, restart). Gateway decode + encode bằng lua-cjson (P2, P1) giao **2–9 thứ tự key khác nhau trên 30 lần**, trên gần như mọi tool (ở body 29 tools: 21–29 tool có > 1 thứ tự), trong khi nội dung (sort key) không đổi. Reload hay restart APISIX **không** làm hết drift.
 - **Sửa nhận định Phase 4**: 1 worker **không** ổn định. P2 1 worker vẫn cho tới 6 thứ tự / 30 lần với body lớn. Thứ tự phụ thuộc trạng thái bảng hash của Lua trong worker (lịch sử cấp phát, GC), không chỉ việc request rơi vào worker nào; nhiều worker làm tăng thêm. Body càng lớn (nhiều tool, nhiều message) thì càng nhiều thứ tự khác nhau.
 - Dấu vân tay cjson **sửa lại** (Phase 4 ghi nhầm dạng đã qua Python): trên đường truyền là `9.007199254741e+15`. Kiểm tra trên body thô tại tap-post: 2.160/2.160 body qua P1/P2 có `9.007199254741e+15`, 720/720 body qua P0 giữ `9007199254740991`. Cột `cjson number` trong report run này = 0 do bản `replay.py` lúc chạy tìm sai chuỗi; đã sửa trong repo. P1 thêm `stream_options` vào 100% body (+46 byte); P2 +6 byte (dạng in số).
+
+## Lab key-order drift — Phase 6: kiểm chứng fix (2026-10-12)
+- [LAB] Hai cách sửa được thử, đều trên P2 4 worker (cấu hình drift mạnh nhất ở Phase 4):
+  - **P2S** (sửa tại gateway): `serverless-pre-function` vẫn decode + encode lại như P2, nhưng encode bằng `core.json.stably_encode` của APISIX (dkjson, sort key) thay cho `core.json.encode` (lua-cjson). Hàm này có sẵn trong `core/json.lua` của APISIX; comment trong source ghi rõ cjson "doesn't maintain the object key order". `LAB_GATEWAY_PROFILE=P2S` trong `render.py`.
+  - **canon** (sửa ở tầng sau gateway, mô phỏng chuẩn hoá tại ingress MaaS): tap-post `TAP_MODE=canon` sort key toàn body ngay trước khi gửi MaaS.
+  - Đối chứng dương: P0 + tap-post `TAP_MODE=shuffle` trên `tools[0]` và trên tool cuối.
+- [LAB] Replay miễn phí (run `20261012-112809`, upstream echo, cùng 3 body và cách chạy như Phase 5): **P2S luôn ra 1 thứ tự key** trên 30 lần gửi, với cả 3 body, c1/c8/reload/restart (0 tool có > 1 thứ tự). P2 cùng run ra 2–9 thứ tự. P2S vẫn có dấu vân tay `9.007199254741e+15` (30/30), vì cjson làm tròn số lúc **decode**; số bị đổi nhưng ổn định giữa các lần nên không làm mất cache.
+- [LAB] 5 session ngắn 2b (Claude Code → tap-pre → APISIX → tap-post → MaaS, `scenarios/prompts/keyorder-short.txt`), `scenarios/keyorder_phase6.sh`, tổng hợp `scenarios/keyorder_phase6.py` → `reports/keyorder-phase6.md` trên ECS. `keyorder.py --forwarded` thêm source `post-fwd` = bytes tap-post thực sự gửi MaaS (sau canon/shuffle). Lần chạy đầu, bước tổng hợp bị OOM-kill (3,4 GB RSS, ECS có 3,7 GB) vì nạp cả `logs/raw` (~1,2 GB, gồm replay Phase 5). `load_raw` giờ chỉ nạp session cần (154 MB).
+- **Kết quả**:
+
+| Session | Gateway | tap-post | Prompt | Request | Loại 1 ra khỏi gateway | Loại 1 tới MaaS | Cache hit tại MaaS | non-200 | tool lỗi (request cuối) |
+|---|---|---|---|---:|---:|---:|---:|---:|---|
+| p6-P2-pass | P2, 4 worker | passthrough | 6/6 | 23 | 9/21 (43%) | 9/21 (43%) | **62,2%** | 0 | 1/16 |
+| p6-P2-canon | P2, 4 worker | canon | 6/6 | 22 | 9/20 (45%) | **0/20** | **82,8%** | 0 | 0/14 |
+| p6-P2S | P2S, 4 worker | passthrough | 6/6 | 24 | **0/22** | **0/22** | **86,8%** | 0 | 1/15 |
+| p6-shuffle-first | P0, auto | shuffle `tools[0]` | 6/6 | 21 | 0/19 | 19/19 (100%) | 2,2% | 0 | 1/15 |
+| p6-shuffle-last | P0, auto | shuffle tool cuối | 6/6 | 21 | 0/19 | 19/19 (100%) | 56,6% | 0 | 1/15 |
+
+- **Cả hai fix đều hết drift tới MaaS và đưa cache hit về mức P0** (Phase 4: P0 86,8–93,8%). P2S sửa ngay tại nguồn: 0 drift ra khỏi gateway, hit 62,2% → 86,8%. canon không sửa gateway (vẫn 45% drift ra khỏi gateway) nhưng MaaS nhận body ổn định: hit 82,8%. Không fix nào làm hỏng session: 6/6 prompt xong, 0 non-200. Session P0 không fix cũng có 1 tool lỗi, nên lỗi này thuộc kịch bản, không phải do fix.
+- Đối chứng dương khớp Phase 3: đảo key ở tool đầu thì gần như mất hết cache (2,2%), ở tool cuối thì còn khoảng một nửa (56,6%).
+- **Khuyến nghị theo thứ tự**: (1) tốt nhất là plugin không decode + encode lại body khi không cần (P0, byte-transparent, hit cao nhất). (2) Nếu plugin bắt buộc sửa body: encode bằng `core.json.stably_encode` thay cho `core.json.encode` (sửa một dòng). (3) Nếu không sửa được gateway: chuẩn hoá (sort key) tại ingress MaaS.
+- [VERIFY] Chưa đo độ trễ / CPU của `stably_encode` (dkjson thuần Lua) so với cjson trên body ~290 KB khi tải production. Session đầu sau khi bật P2S/canon sẽ không dùng lại cache tạo trước đó (prefix byte khác), chỉ là chi phí một lần. Mẫu nhỏ: 1 session mỗi cấu hình, nhưng replay (0 thứ tự thứ hai trên 360 lần gửi) củng cố kết quả P2S.
