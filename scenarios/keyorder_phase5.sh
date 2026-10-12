@@ -19,6 +19,8 @@ OUT="$LAB/logs/replay"
 RUN_ID="$(date -u +%Y%m%d-%H%M%S)"
 WINDOWS="$OUT/windows-$RUN_ID.jsonl"
 mkdir -p "$OUT/bodies"
+# docker compose is called directly here: same uid/gid as the Makefile sets.
+export LAB_UID="$(id -u)" LAB_GID="$(id -g)"
 DEV_KEY="$(sed -n 's/^DEV_KEYS=//p' .env | tr -d "'\"" | tr ',' '\n' | sed -n 's/^dev_alice://p')"
 export REPLAY_API_KEY="$DEV_KEY"
 
@@ -49,7 +51,8 @@ EOF
 send() {   # tag body concurrency
   python3 scenarios/replay/replay.py send --base-url http://127.0.0.1:9001/v1/messages?beta=true \
     --body-file "$OUT/bodies/$2.json" -n "$N" --concurrency "$3" --tag "$1" --windows "$WINDOWS" \
-    | python3 -c 'import json,sys; o=json.loads(sys.stdin.read()); print("  ", o["tag"], o["status"], o["seconds"], "s")'
+    | python3 -c 'import json,sys; o=json.loads(sys.stdin.read()); print("  ", o["tag"], o["status"], o["seconds"], "s")
+sys.exit(0 if set(o["status"]) == {"200"} else 1)' || { echo "STOP: $1 did not get 30x200"; exit 5; }
 }
 
 gateway() {   # config
@@ -78,7 +81,8 @@ restore() {
 trap restore EXIT
 
 [[ -f "$OUT/echo.jsonl" ]] && mv "$OUT/echo.jsonl" "$OUT/echo-before-$RUN_ID.jsonl"
-docker compose --profile keyorder up -d replay-echo >/dev/null 2>&1
+docker compose --profile keyorder up -d --force-recreate replay-echo >/dev/null 2>&1
+sleep 2
 for cfg in $CONFIGS; do
   gateway "$cfg"
   echo "== $cfg ($(docker exec maas-cache-lab-apisix-1 sh -c 'grep -m1 ^worker_processes conf/nginx.conf' 2>/dev/null))"
