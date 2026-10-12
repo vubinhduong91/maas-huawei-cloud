@@ -1,0 +1,21 @@
+# Key-order lab Phase 2: one session of fixed prompts on sample-repo (Reaparr), one per line.
+# Lines starting with "mcp:" run only in variant 2b (lab-tfs MCP server attached).
+# Each prompt names the tools to use: Read, Grep, Edit, Bash, TaskCreate/TaskUpdate, Agent (subagent).
+Use TaskCreate to create three tasks for this session: "Locate the download task entity", "Add a Note property", "Review the changes". Then, using Glob or `ls` only (do not read large files), give a 5-bullet overview of how the repository is organised.
+Use Grep to find where the download task entity class is defined under src/Domain, Read only that file, and list its properties. Then use TaskUpdate to mark the first task in progress.
+mcp: Use the lab-tfs tool tfs_get_workitem to read work item 4211, then tfs_update_workitem to set state Active, priority 2, area_path "Reaparr\Downloads", iteration_path "Reaparr\Sprint 42" and custom_fields {"component": "DownloadTask", "estimate_hours": 3}.
+Use Bash to run `git log --oneline -5` and `git status --short`, and tell me the current branch and whether the tree is clean.
+Use the Agent tool to start a general-purpose subagent that finds which PublicAPI endpoint creates download tasks and which Application handler processes the request; it must report file paths and class names only. Summarise its answer in 3 lines.
+Read the handler the subagent found (only the part that validates and saves the task) and explain the validation steps in at most 5 bullets.
+Use TaskUpdate to mark the first task completed and the second in progress. Then use Edit to add a nullable string property `Note` to the download task entity.
+Use Grep to find the EF Core configuration class for that entity and use Edit to map `Note` with a maximum length of 500.
+Use Bash to run `git diff --stat` and confirm that only the two expected files changed.
+mcp: Use tfs_update_workitem on work item 4211 to set repro_steps to a two-line description of the Note change and add a comment saying the entity and EF Core configuration were updated.
+Use Grep to find the DTO returned by the download-task endpoints, add a `Note` property to it with Edit, and update the mapping if there is one.
+Use Grep to count how many files under tests/ mention DownloadTask; give the number and two example paths only.
+Use TaskUpdate to mark the second task completed and the third in progress. Then use Bash `git diff` to review all changes and list anything inconsistent or missing.
+Fix the inconsistencies you found with Edit. If there are none, add a one-line XML doc comment to the `Note` property of the entity.
+Use Grep to find the TypeScript type for download tasks under src/AppHost/ClientApp and use Edit to add an optional `note?: string` field.
+Use the Agent tool to start a subagent that Reads every file changed in this session (from `git status --short`) and checks for syntax mistakes such as unbalanced braces or missing semicolons; report problems only.
+Use TaskUpdate to mark the third task completed. Then use Bash `git status --short` to list every changed file and write a 3-line pull request summary.
+mcp: Use tfs_query_workitems to list Active items in iteration "Reaparr\Sprint 42", then use tfs_update_workitem to set work item 4211 to Resolved with a comment linking to the pull request summary.

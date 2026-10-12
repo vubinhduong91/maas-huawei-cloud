@@ -4,6 +4,7 @@
 #   dev           a consumer name from DEV_KEYS (e.g. dev_alice)
 #   A|B           ANTHROPIC_BASE_URL = APISIX (:9080); the lab must be up in that mode
 #   C             ANTHROPIC_BASE_URL = tap (:9091), bypassing APISIX
+#   P             ANTHROPIC_BASE_URL = tap-pre (:9001, key-order lab; make keyorder-up)
 #   --background  do NOT set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC (observe background traffic)
 # Examples:
 #   scripts/run-claude.sh dev_alice B                      # interactive
@@ -29,11 +30,14 @@ done
 case "$MODE" in
   A|B) BASE_URL="${APISIX_URL:-http://localhost:9080}" ;;
   C)   BASE_URL="${TAP_URL:-http://localhost:9091}" ;;
-  *)   echo "mode must be A, B or C" >&2; exit 2 ;;
+  P)   BASE_URL="${TAP_PRE_URL:-http://localhost:9001}" ;;
+  *)   echo "mode must be A, B, C or P" >&2; exit 2 ;;
 esac
 # Tap is up iff its mode C listener answers (works without docker group access).
 tap_up=$([[ "$(curl -s -o /dev/null -w "%{http_code}" "${TAP_URL:-http://localhost:9091}/__tap/health")" == 000 ]] && echo 0 || echo 1)
-if [[ "$MODE" == A && "$tap_up" != 0 ]]; then
+if [[ "$MODE" == P ]]; then
+  [[ "$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/__tap/health")" == 200 ]]     || { echo "error: tap-pre is not running (run: make keyorder-up)" >&2; exit 2; }
+elif [[ "$MODE" == A && "$tap_up" != 0 ]]; then
   echo "warning: tap is running, so APISIX is probably in mode B (run: make up MODE=A)" >&2
 elif [[ "$MODE" != A && "$tap_up" == 0 ]]; then
   echo "error: mode $MODE needs the tap (run: make up MODE=$MODE)" >&2; exit 2

@@ -12,7 +12,7 @@ ifneq ($(MODE),A)
 export COMPOSE_PROFILES := tap
 endif
 
-.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down analyze test-analyze scenario report keyorder-up keyorder-down keyorder test-keyorder
+.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down analyze test-analyze scenario report keyorder-up keyorder-down keyorder test-keyorder keyorder-session
 
 # Call MaaS directly to verify auth header / count_tokens / model names.
 probe:
@@ -114,3 +114,8 @@ keyorder:
 
 test-keyorder:
 	python3 tap/test_keyorder.py
+
+# One Claude Code session of fixed prompts through tap-pre (Phase 2: start tap-pre with
+# TAP_PRE_UPSTREAM=maas). make keyorder-session V=2a|2b [LABEL=...]
+keyorder-session:
+	bash scenarios/session_script.sh $(V) $(LABEL)
