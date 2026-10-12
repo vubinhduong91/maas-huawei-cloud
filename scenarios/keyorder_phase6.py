@@ -52,7 +52,7 @@ def tool_errors(reqs):
 def main():
     sessions = latest(LAB / "logs/keyorder/sessions.jsonl", "p6-")
     configs = latest(LAB / "logs/keyorder/phase6-configs.jsonl", "p6-")
-    raw = ko.load_raw(LAB / "logs/raw", forwarded=True)
+    raw = ko.load_raw(LAB / "logs/raw", forwarded=True, sessions={s["session"] for s in sessions.values()})
     out = ["# Key-order lab Phase 6: verifying the fixes", "",
            "One short session per row (variant 2b, `scenarios/prompts/keyorder-short.txt`): Claude Code → tap-pre → "
            "APISIX → tap-post → MaaS. \"Reaching MaaS\" = bytes tap-post forwarded (after canon/shuffle).", "",

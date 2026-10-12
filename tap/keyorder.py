@@ -237,16 +237,19 @@ def make_req(source, rid, meta, body):
             "meta": meta, "body": body, "obj": obj, "dups": dups, "sig": signature(obj, body)}
 
 
-def load_raw(raw_dir, forwarded=False):
+def load_raw(raw_dir, forwarded=False, sessions=None):
     """{source: [req]}; each req keeps the bytes its tap forwarded (fwd_body) for pre/post
     matching. forwarded=True adds a source "<tap>-fwd" analysed on those forwarded bytes:
-    what the upstream (MaaS) actually got when TAP_MODE canon/shuffle changed the body."""
-    reqs, fwd = {}, {}
+    what the upstream (MaaS) actually got when TAP_MODE canon/shuffle changed the body.
+    sessions: only load these session ids (the raw dir grows past what fits in memory)."""
+    reqs = {}
     for meta_path in sorted(Path(raw_dir).glob("*/*.json")):
         source = meta_path.parent.name
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except ValueError:
+            continue
+        if sessions is not None and (meta.get("session") or "?") not in sessions:
             continue
         body_path = meta_path.with_suffix(".body")
         if not body_path.exists() or not is_messages(meta.get("path")):
@@ -469,7 +472,8 @@ def main(argv=None):
     ap.add_argument("--max-rows", type=int, default=50)
     args = ap.parse_args(argv)
 
-    reqs = load_raw(args.raw, args.forwarded) if Path(args.raw).is_dir() else {}
+    sessions = {args.session} if args.session else None
+    reqs = load_raw(args.raw, args.forwarded, sessions) if Path(args.raw).is_dir() else {}
     if args.tap:
         tap_reqs, bad = load_tap(args.tap)
         reqs["tap"] = tap_reqs
