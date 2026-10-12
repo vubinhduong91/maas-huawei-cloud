@@ -45,11 +45,41 @@ services:
     env_file: .env
     environment:
       TAP_LOG_DIR: /logs
+      # Key-order lab: this tap is "tap-post". It also writes logs/raw/post/<req_id>.*
+      # for requests that came through tap-pre (X-Lab-Req-Id). TAP_POST_MODE=canon
+      # simulates a gateway-side fix (keys sorted before MaaS).
+      TAP_NAME: post
+      TAP_RAW_DIR: /raw
+      TAP_MODE: ${TAP_POST_MODE:-passthrough}
+      TAP_SHUFFLE_TOOL_INDEX: ${TAP_POST_SHUFFLE_TOOL_INDEX:-0}
+      TAP_SHUFFLE_SEED: ${TAP_POST_SHUFFLE_SEED:-}
     user: "${LAB_UID:-1000}:${LAB_GID:-1000}"   # log files owned by the host user
     volumes:
       - ./logs/tap:/logs
+      - ./logs/raw:/raw
     ports:
       - "${LAB_BIND:-0.0.0.0}:9091:9091"
+    restart: unless-stopped
+
+  # Key-order lab (profile "keyorder", make keyorder-up): client -> tap-pre :9001 ->
+  # APISIX (TAP_PRE_UPSTREAM=maas: straight to MaaS, the control path). Writes only
+  # logs/raw/pre/<req_id>.*, never logs/tap, so analyze.py counts each request once.
+  tap-pre:
+    build: ./tap
+    profiles: ["keyorder"]
+    env_file: .env
+    environment:
+      TAP_NAME: pre
+      TAP_RAW_DIR: /raw
+      TAP_UPSTREAM: ${TAP_PRE_UPSTREAM:-http://apisix:9080}
+      TAP_MODE: ${TAP_PRE_MODE:-passthrough}
+      TAP_SHUFFLE_TOOL_INDEX: ${TAP_PRE_SHUFFLE_TOOL_INDEX:-0}
+      TAP_SHUFFLE_SEED: ${TAP_PRE_SHUFFLE_SEED:-}
+    user: "${LAB_UID:-1000}:${LAB_GID:-1000}"
+    volumes:
+      - ./logs/raw:/raw
+    ports:
+      - "${LAB_BIND:-0.0.0.0}:9001:9001"
     restart: unless-stopped
 
   # ---- View-only dashboard (make dashboard), profile "dashboard" --------------------

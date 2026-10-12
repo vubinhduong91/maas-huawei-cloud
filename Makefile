@@ -12,14 +12,14 @@ ifneq ($(MODE),A)
 export COMPOSE_PROFILES := tap
 endif
 
-.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down analyze test-analyze scenario report
+.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down analyze test-analyze scenario report keyorder-up keyorder-down keyorder test-keyorder
 
 # Call MaaS directly to verify auth header / count_tokens / model names.
 probe:
 	bash scripts/probe-maas.sh
 
 up:
-	mkdir -p logs/apisix logs/tap reports
+	mkdir -p logs/apisix logs/tap logs/raw/pre logs/raw/post reports
 	chmod 777 logs/apisix  # written by the non-root apisix user inside the container
 	@if [[ "$(MODE)" == A ]]; then $(COMPOSE) --profile tap rm -sf tap >/dev/null 2>&1 || true; fi
 	$(COMPOSE) up -d --build --force-recreate
@@ -27,7 +27,7 @@ up:
 
 # -v also drops the volume holding the rendered config (it contains MAAS_API_KEY).
 down:
-	$(COMPOSE) --profile tap --profile dashboard down -v
+	$(COMPOSE) --profile tap --profile dashboard --profile keyorder down -v
 
 smoke:
 	bash scripts/smoke.sh
@@ -94,3 +94,23 @@ scenario:
 # make report ARGS="--since 2026-10-11T10:12"
 report:
 	python3 analyze.py --labelled-only --findings docs/findings.md $(ARGS)
+
+# ---- Key-order drift lab -------------------------------------------------------------
+# tap-pre :9001 in front of the running lab (start the lab with `make up MODE=B` first;
+# --no-deps so APISIX is not re-rendered). Settings from .env or the command line:
+#   TAP_PRE_UPSTREAM=maas (control path, skips APISIX)  TAP_PRE_MODE=canon|shuffle
+#   TAP_PRE_SHUFFLE_TOOL_INDEX=-1  TAP_PRE_SHUFFLE_SEED=7  TAP_POST_MODE=canon (then make up MODE=B)
+keyorder-up:
+	mkdir -p logs/raw/pre logs/raw/post
+	$(COMPOSE) --profile keyorder up -d --build --no-deps --force-recreate tap-pre
+	@sleep 2; $(COMPOSE) --profile keyorder logs --tail 3 tap-pre
+
+keyorder-down:
+	$(COMPOSE) --profile keyorder rm -sf tap-pre
+
+# Offline analyzer: make keyorder ARGS="--tap logs/tap --out reports/keyorder.md"
+keyorder:
+	python3 tap/keyorder.py $(ARGS)
+
+test-keyorder:
+	python3 tap/test_keyorder.py

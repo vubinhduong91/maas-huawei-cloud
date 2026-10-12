@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """Transparent recording proxy for the MaaS cache lab (Phase 2).
 
-Listeners:
+Listeners (TAP_NAME=post, the default):
   :9090  mode B  APISIX -> tap -> MaaS. Forwarded as received: APISIX already set the
                  MaaS key. Lab headers (x-lab-*) are recorded, then stripped.
   :9091  mode C  client -> tap -> MaaS. The dev key is checked against DEV_KEYS and
                  replaced by the MaaS key, as APISIX does in mode A.
+Listener (TAP_NAME=pre, key-order lab):
+  :9001  mode P  client -> tap-pre -> TAP_UPSTREAM (APISIX, or "maas" for the control path
+                 that skips APISIX; then the dev key is swapped as in mode C). Adds
+                 X-Lab-Req-Id so the same request can be matched in logs/raw/pre and
+                 logs/raw/post (written by mode B when that header arrives).
+
+TAP_MODE: passthrough (default, body untouched), canon (sort keys of every object,
+arrays kept) or shuffle (permute tools[TAP_SHUFFLE_TOOL_INDEX].input_schema.properties).
+Only these two modes ever change the body; the change is recorded.
 
 Bytes are never re-serialized: the request body goes upstream exactly as read, header
 order is kept, response chunks are written to the client as they arrive. Usage and
@@ -16,9 +25,11 @@ import asyncio
 import hashlib
 import json
 import os
+import random
 import re
 import sys
 import time
+import uuid
 import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -37,6 +48,8 @@ HOP_BY_HOP = {
 }
 SECRET_HEADERS = {"authorization", "x-api-key"}
 LAB_HEADER_PREFIX = "x-lab-"
+REQ_ID_HEADER = "X-Lab-Req-Id"       # set by tap-pre, read by tap-post
+TAP_MODES = ("passthrough", "canon", "shuffle")
 SESSION_HEADER = "x-claude-code-session-id"
 HEALTH_PATH = "/__tap/health"
 REDACTED = "<redacted>"
@@ -55,6 +68,12 @@ class Config:
     session_gap_s: float = 300.0
     secrets: list = field(default_factory=list)
     anthropic_origin: str = "https://api.anthropic.com"   # mode B, X-Lab-Target: anthropic
+    name: str = "post"              # "pre" = key-order lab tap in front of APISIX (mode P)
+    pre_upstream: str = "http://apisix:9080"   # mode P target; "maas" = skip APISIX
+    tap_mode: str = "passthrough"
+    shuffle_tool_index: int = 0
+    shuffle_seed: int = None        # None = new random seed per request (logged)
+    raw_dir: Path = None            # <TAP_RAW_DIR>/<name>/<req_id>.body|.json
 
 
 def load_config(environ=os.environ):
@@ -68,6 +87,12 @@ def load_config(environ=os.environ):
     origin = environ.get("TAP_UPSTREAM_ORIGIN", "").strip() or f"{base.scheme}://{base.netloc}"
     api_key = need("MAAS_API_KEY")
     scheme = environ.get("MAAS_AUTH_SCHEME", "").strip()
+    tap_name = safe_name(environ.get("TAP_NAME", "").strip() or "post")
+    tap_mode = environ.get("TAP_MODE", "").strip() or "passthrough"
+    if tap_mode not in TAP_MODES:
+        sys.exit(f"tap: TAP_MODE={tap_mode!r}, expected one of {', '.join(TAP_MODES)}")
+    seed = environ.get("TAP_SHUFFLE_SEED", "").strip()
+    raw_dir = environ.get("TAP_RAW_DIR", "").strip()
     dev_keys = {}
     for item in need("DEV_KEYS").split(","):
         name, _, key = item.strip().partition(":")
@@ -83,6 +108,12 @@ def load_config(environ=os.environ):
         session_gap_s=float(environ.get("TAP_SESSION_GAP_S", "300")),
         secrets=[api_key, *dev_keys],
         anthropic_origin=(environ.get("TAP_ANTHROPIC_ORIGIN", "").strip() or "https://api.anthropic.com").rstrip("/"),
+        name=tap_name,
+        pre_upstream=(environ.get("TAP_UPSTREAM", "").strip() or "http://apisix:9080").rstrip("/"),
+        tap_mode=tap_mode,
+        shuffle_tool_index=int(environ.get("TAP_SHUFFLE_TOOL_INDEX", "0")),
+        shuffle_seed=int(seed) if seed else None,
+        raw_dir=Path(raw_dir) / tap_name if raw_dir else None,
     )
 
 
@@ -113,6 +144,64 @@ def dev_key_from(pairs):
         return key.strip()
     m = re.match(r"^[Bb]earer\s+(\S+)\s*$", header(pairs, "authorization") or "")
     return m.group(1) if m else None
+
+
+def lab_dev_key(pairs):
+    """Same precedence as the APISIX pre-function: X-Lab-Key, x-api-key, Bearer."""
+    key = header(pairs, "x-lab-key")
+    return key.strip() if key else dev_key_from(pairs)
+
+
+def dump_compact(obj, sort_keys=False):
+    # Claude Code sends JSON.stringify output: no spaces, non-ASCII kept as is.
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"),
+                      sort_keys=sort_keys).encode("utf-8")
+
+
+def transform_body(body, tap_mode, tool_index=0, seed=None):
+    """Body to forward plus a record of what was changed (None for passthrough).
+
+    canon: every object's keys sorted, arrays in order. shuffle: keys of
+    tools[tool_index].input_schema.properties permuted (always a different order when
+    there are 2+ keys). On anything unexpected the body is forwarded unchanged.
+    """
+    if tap_mode == "passthrough":
+        return body, None
+    info = {"mode": tap_mode, "applied": False, "sha256_in": hashlib.sha256(body).hexdigest()}
+    try:
+        obj = json.loads(body)
+        # True when parse + compact dump gives back the same bytes: then the requested
+        # change is the only difference between received and forwarded body.
+        info["reserialize_identical"] = dump_compact(obj) == body
+        if tap_mode == "canon":
+            out = dump_compact(obj, sort_keys=True)
+        else:
+            tools = obj.get("tools") if isinstance(obj, dict) else None
+            if not isinstance(tools, list) or not -len(tools) <= tool_index < len(tools):
+                info["reason"] = f"no tool at index {tool_index}"
+                return body, info
+            tool = tools[tool_index]
+            schema = tool.get("input_schema") if isinstance(tool, dict) else None
+            props = schema.get("properties") if isinstance(schema, dict) else None
+            if not isinstance(props, dict) or len(props) < 2:
+                info["reason"] = "input_schema.properties has fewer than 2 keys"
+                return body, info
+            if seed is None:
+                seed = random.SystemRandom().randrange(2 ** 32)
+            rng = random.Random(seed)
+            old = list(props)
+            new = old[:]
+            while new == old:
+                rng.shuffle(new)
+            schema["properties"] = {k: props[k] for k in new}
+            info.update(seed=seed, tool_index=tool_index % len(tools), tool_name=tool.get("name"),
+                        old_order=old, new_order=new)
+            out = dump_compact(obj)
+    except (ValueError, UnicodeEncodeError, AttributeError, TypeError) as exc:
+        info["reason"] = f"not transformed: {exc!r}"[:300]
+        return body, info
+    info.update(applied=True, sha256_out=hashlib.sha256(out).hexdigest())
+    return out, info
 
 
 def session_from_metadata(user_id):
@@ -257,6 +346,35 @@ def write_record(cfg, record):
     return path
 
 
+RAW_META_FIELDS = (
+    "tap", "req_id", "mode", "ts_start", "method", "path", "session", "session_source",
+    "consumer", "request_model", "request_stream", "request_body_bytes", "request_body_sha256",
+    "forwarded_body_sha256", "transform", "upstream_url", "upstream_target", "lab_request_id",
+    "request_headers", "forwarded_headers", "status", "error", "ttft_s", "total_s",
+    "usage", "stop_reason", "response_model", "sse_events",
+)
+
+
+def write_raw(cfg, record, body, fwd_body):
+    """Key-order lab files: <req_id>.body (bytes as received), <req_id>.fwd.body (only
+    when TAP_MODE changed them) and <req_id>.json (metadata, secrets redacted)."""
+    cfg.raw_dir.mkdir(parents=True, exist_ok=True)
+    stem = safe_name(record["req_id"])
+    (cfg.raw_dir / f"{stem}.body").write_bytes(body)
+    if fwd_body is not body:
+        (cfg.raw_dir / f"{stem}.fwd.body").write_bytes(fwd_body)
+    meta = {k: record.get(k) for k in RAW_META_FIELDS}
+    text = json.dumps(meta, ensure_ascii=False, indent=1)
+    for secret in cfg.secrets:
+        if secret and secret in text:
+            text = text.replace(secret, REDACTED)
+    path = cfg.raw_dir / f"{stem}.json"
+    tmp = cfg.raw_dir / f"{stem}.tmp"
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
 def make_handler(cfg, mode, http, sessions):
     async def handle(request: web.Request):
         if request.path == HEALTH_PATH:          # liveness probe, never forwarded or recorded
@@ -270,6 +388,7 @@ def make_handler(cfg, mode, http, sessions):
             body_obj = None
 
         record = {
+            "tap": cfg.name,
             "mode": mode,
             "ts_start": now_iso(),
             "method": request.method,
@@ -287,9 +406,23 @@ def make_handler(cfg, mode, http, sessions):
         lab = {k.lower(): v for k, v in received if k.lower().startswith(LAB_HEADER_PREFIX)}
         forward = [(k, v) for k, v in received
                    if k.lower() not in HOP_BY_HOP and not k.lower().startswith(LAB_HEADER_PREFIX)]
+        req_id = str(uuid.uuid4()) if mode == "P" else lab.get(REQ_ID_HEADER.lower())
 
         origin, target = cfg.upstream_origin, "maas"
-        if mode == "B":
+        if mode == "P":
+            consumer = cfg.dev_keys.get(lab_dev_key(received) or "")
+            if cfg.pre_upstream == "maas":
+                # Control path: client -> tap-pre -> MaaS, credentials handled as in mode C.
+                upstream_path = cfg.maas_prefix + request.raw_path
+                forward = [(k, v) for k, v in forward if k.lower() not in SECRET_HEADERS]
+                forward.append((cfg.maas_auth_header, cfg.maas_auth_value))
+            else:
+                # To APISIX: every header as received (X-Lab-Key identifies the dev there).
+                origin, target, upstream_path = cfg.pre_upstream, "gateway", request.raw_path
+                forward = [(k, v) for k, v in received if k.lower() not in HOP_BY_HOP
+                           and k.lower() != REQ_ID_HEADER.lower()]
+                forward.append((REQ_ID_HEADER, req_id))
+        elif mode == "B":
             consumer = lab.get("x-lab-consumer")
             upstream_path = request.raw_path            # APISIX already rewrote it
             if lab.get("x-lab-target") == "anthropic":
@@ -305,7 +438,12 @@ def make_handler(cfg, mode, http, sessions):
             forward.append((cfg.maas_auth_header, cfg.maas_auth_value))
 
         session, source = sessions.resolve(received, body_obj, consumer)
-        record.update(session=session, session_source=source, seq=sessions.next_seq(session),
+        fwd_body, transform = transform_body(body, cfg.tap_mode, cfg.shuffle_tool_index,
+                                             cfg.shuffle_seed)
+        record.update(session=session, session_source=source,
+                      seq=None if mode == "P" else sessions.next_seq(session),
+                      req_id=req_id, transform=transform,
+                      forwarded_body_sha256=hashlib.sha256(fwd_body).hexdigest(),
                       consumer=consumer, lab_request_id=lab.get("x-lab-request-id"),
                       forwarded_headers=redact_headers(forward),
                       upstream_url=origin + upstream_path, upstream_target=target)
@@ -316,10 +454,14 @@ def make_handler(cfg, mode, http, sessions):
             record["request_body"] = body.decode("utf-8", "replace")
             record["request_body_note"] = "not valid UTF-8; sha256 is of the raw bytes"
 
-        if mode == "C" and consumer is None:
-            msg = "Invalid API key in request" if dev_key_from(received) else "Missing API key in request"
+        keep_raw = cfg.raw_dir is not None and req_id is not None
+        if consumer is None and (mode == "C" or (mode == "P" and cfg.pre_upstream == "maas")):
+            msg = "Invalid API key in request" if lab_dev_key(received) else "Missing API key in request"
             record.update(status=401, error={"type": "auth", "message": msg})
-            write_record(cfg, record)
+            if mode != "P":
+                write_record(cfg, record)
+            if keep_raw:
+                write_raw(cfg, record, body, fwd_body)
             return web.json_response({"message": msg}, status=401)
 
         resp = None
@@ -328,7 +470,7 @@ def make_handler(cfg, mode, http, sessions):
         try:
             async with http.request(
                 request.method, URL(origin + upstream_path, encoded=True),
-                headers=forward, data=body,
+                headers=forward, data=fwd_body,
                 skip_auto_headers=("Accept", "Accept-Encoding", "User-Agent", "Content-Type"),
             ) as up:
                 record["upstream_headers_s"] = round(time.monotonic() - t_sent, 4)
@@ -384,9 +526,15 @@ def make_handler(cfg, mode, http, sessions):
                 if record["status"] and record["status"] >= 400 and observer.body:
                     record["response_excerpt"] = bytes(observer.body[:ERROR_EXCERPT]).decode(
                         "utf-8", "replace")
-            path = write_record(cfg, record)
+            # Mode P writes only the key-order lab files, so analyze.py never counts a
+            # request twice (once at tap-pre, once at tap-post).
+            path = None if mode == "P" else write_record(cfg, record)
+            if keep_raw:
+                raw_path = write_raw(cfg, record, body, fwd_body)
+                path = path or raw_path
             u = record.get("usage") or {}
-            print(f"tap {mode} {record['session']}/{record['seq']:04d} {record['status']} "
+            where = record["session"] + "/" + (req_id if mode == "P" else f"{record['seq']:04d}")
+            print(f"tap {cfg.name} {mode} {where} {record['status']} "
                   f"consumer={consumer} in={u.get('input_tokens')} "
                   f"cache_read={u.get('cache_read_input_tokens')} out={u.get('output_tokens')} "
                   f"ttft={record.get('ttft_s')} err={(record['error'] or {}).get('type')} -> {path}",
@@ -396,9 +544,11 @@ def make_handler(cfg, mode, http, sessions):
     return handle
 
 
-async def start(cfg, port_b=9090, port_c=9091, host="0.0.0.0"):
-    """Start both listeners; returns (runners, client session) for shutdown."""
-    cfg.log_dir.mkdir(parents=True, exist_ok=True)
+async def start(cfg, port_b=9090, port_c=9091, host="0.0.0.0", port_pre=9001):
+    """Start this tap's listeners (pre: P, otherwise B and C); returns (runners, client
+    session) for shutdown."""
+    if cfg.name != "pre":            # mode P writes only cfg.raw_dir
+        cfg.log_dir.mkdir(parents=True, exist_ok=True)
     http = aiohttp.ClientSession(
         auto_decompress=False,
         timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=600),
@@ -406,7 +556,8 @@ async def start(cfg, port_b=9090, port_c=9091, host="0.0.0.0"):
     )
     sessions = Sessions(cfg.log_dir, cfg.session_gap_s)
     runners = []
-    for mode, port in (("B", port_b), ("C", port_c)):
+    listeners = [("P", port_pre)] if cfg.name == "pre" else [("B", port_b), ("C", port_c)]
+    for mode, port in listeners:
         app = web.Application(client_max_size=64 * 1024 * 1024)
         app.router.add_route("*", "/{tail:.*}", make_handler(cfg, mode, http, sessions))
         runner = web.AppRunner(app, access_log=None)
@@ -425,8 +576,13 @@ async def stop(runners, http):
 async def main():
     cfg = load_config()
     await start(cfg)
-    print(f"tap: mode B on :9090, mode C on :9091 -> {cfg.upstream_origin}{cfg.maas_prefix}, "
-          f"logs in {cfg.log_dir}", flush=True)
+    raw = f", raw in {cfg.raw_dir}" if cfg.raw_dir else ""
+    if cfg.name == "pre":
+        print(f"tap pre: mode P on :9001 -> {cfg.pre_upstream}, TAP_MODE={cfg.tap_mode}{raw}",
+              flush=True)
+    else:
+        print(f"tap {cfg.name}: mode B on :9090, mode C on :9091 -> {cfg.upstream_origin}"
+              f"{cfg.maas_prefix}, TAP_MODE={cfg.tap_mode}, logs in {cfg.log_dir}{raw}", flush=True)
     await asyncio.Event().wait()
 
 
