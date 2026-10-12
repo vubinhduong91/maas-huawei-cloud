@@ -8,7 +8,8 @@ services:
     environment:
       LAB_MODE: ${LAB_MODE:-A}   # set by `make up MODE=...`
       # Key-order lab Phase 4: P0 (default) | P1 (ai-proxy, needs APISIX_IMAGE_TAG=3.14.1-debian)
-      # | P2 (pre-function decodes and re-encodes the body with core.json)
+      # | P2 (pre-function decodes and re-encodes the body with core.json.encode, lua-cjson)
+      # | P2S (same with core.json.stably_encode: dkjson, sorted keys)
       LAB_GATEWAY_PROFILE: ${LAB_GATEWAY_PROFILE:-P0}
     volumes:
       - ./apisix:/src:ro

@@ -237,8 +237,10 @@ def make_req(source, rid, meta, body):
             "meta": meta, "body": body, "obj": obj, "dups": dups, "sig": signature(obj, body)}
 
 
-def load_raw(raw_dir):
-    """{source: [req]} plus forwarded bodies of tap-pre ({req_id: bytes}) for pre/post matching."""
+def load_raw(raw_dir, forwarded=False):
+    """{source: [req]}; each req keeps the bytes its tap forwarded (fwd_body) for pre/post
+    matching. forwarded=True adds a source "<tap>-fwd" analysed on those forwarded bytes:
+    what the upstream (MaaS) actually got when TAP_MODE canon/shuffle changed the body."""
     reqs, fwd = {}, {}
     for meta_path in sorted(Path(raw_dir).glob("*/*.json")):
         source = meta_path.parent.name
@@ -255,6 +257,11 @@ def load_raw(raw_dir):
             f = meta_path.parent / f"{meta_path.stem}.fwd.body"
             req["fwd_body"] = f.read_bytes() if f.exists() else req["body"]
             reqs.setdefault(source, []).append(req)
+            if forwarded:
+                fwd = make_req(f"{source}-fwd", rid, meta, req["fwd_body"])
+                if fwd:
+                    fwd["fwd_body"] = fwd["body"]
+                    reqs.setdefault(f"{source}-fwd", []).append(fwd)
     return reqs
 
 
@@ -453,6 +460,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--raw", default="logs/raw", help="tap-pre/tap-post raw dir (default logs/raw)")
     ap.add_argument("--tap", help="also read cache-lab tap records, e.g. logs/tap")
+    ap.add_argument("--forwarded", action="store_true",
+                    help="also analyse what each tap forwarded (sources pre-fwd, post-fwd)")
     ap.add_argument("--since", help="ISO time (UTC), e.g. 2026-10-12T08:00")
     ap.add_argument("--session")
     ap.add_argument("--out", help="write the Markdown report here (default: stdout)")
@@ -460,7 +469,7 @@ def main(argv=None):
     ap.add_argument("--max-rows", type=int, default=50)
     args = ap.parse_args(argv)
 
-    reqs = load_raw(args.raw) if Path(args.raw).is_dir() else {}
+    reqs = load_raw(args.raw, args.forwarded) if Path(args.raw).is_dir() else {}
     if args.tap:
         tap_reqs, bad = load_tap(args.tap)
         reqs["tap"] = tap_reqs

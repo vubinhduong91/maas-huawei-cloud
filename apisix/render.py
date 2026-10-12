@@ -74,8 +74,8 @@ def lab_mode():
 
 def gateway_profile():
     profile = os.environ.get("LAB_GATEWAY_PROFILE", "P0").strip().upper() or "P0"
-    if profile not in ("P0", "P1", "P2"):
-        die(f"LAB_GATEWAY_PROFILE must be P0, P1 or P2, got {profile!r}")
+    if profile not in ("P0", "P1", "P2", "P2S"):
+        die(f"LAB_GATEWAY_PROFILE must be P0, P1, P2 or P2S, got {profile!r}")
     return profile
 
 
@@ -200,7 +200,8 @@ def render(redacted):
             **({"scheme": "http", "host": q("tap"), "port": 9090} if mode == "B"
                else {"scheme": "https", "host": q("api.anthropic.com"), "port": 443})) if passthrough else "",
         PASSTHROUGH_PLUGINS=PASSTHROUGH_PLUGINS.format(to_tap="true" if mode == "B" else "false") if passthrough else "",
-        REENCODE_LUA="true" if profile == "P2" else "false",
+        REENCODE_LUA="true" if profile in ("P2", "P2S") else "false",
+        REENCODE_FN="core.json.stably_encode" if profile == "P2S" else "core.json.encode",
         AI_PROXY=AI_PROXY.format(
             auth=json.dumps({auth_header: auth_value}),
             model=q(env("MAAS_MODEL_MAIN")),

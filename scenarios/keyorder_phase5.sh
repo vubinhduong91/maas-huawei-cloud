@@ -8,6 +8,7 @@
 #   P0      client -> tap-pre -> APISIX -> tap-post -> echo   (no body plugin), 4 workers
 #   P2-w1 / P2  pre-function core.json decode + encode, 1 / 4 workers
 #   P1      ai-proxy (APISIX 3.14.1), 4 workers
+#   P2S     pre-function decode + core.json.stably_encode (dkjson, sorted keys), 4 workers
 # While it runs, GLM requests of the daily lab get the echo's "OK"; the lab is restored at the end.
 # Usage: scenarios/keyorder_phase5.sh ["direct P0 P2-w1 P2 P1"]
 set -uo pipefail
@@ -63,6 +64,7 @@ gateway() {   # config
     P0)     export LAB_GATEWAY_PROFILE=P0 APISIX_WORKER_PROCESSES=4 ;;
     P2-w1)  export LAB_GATEWAY_PROFILE=P2 APISIX_WORKER_PROCESSES=1 ;;
     P2)     export LAB_GATEWAY_PROFILE=P2 APISIX_WORKER_PROCESSES=4 ;;
+    P2S)    export LAB_GATEWAY_PROFILE=P2S APISIX_WORKER_PROCESSES=4 ;;
     P1)     export LAB_GATEWAY_PROFILE=P1 APISIX_WORKER_PROCESSES=4 APISIX_IMAGE_TAG=3.14.1-debian TAP_POST_RAW_ALL=1 ;;
   esac
   make -s up MODE=B 2>&1 | grep -E "render:|rror" || true

@@ -220,6 +220,9 @@ with tempfile.TemporaryDirectory() as tmp:
         (td / f"{i:04d}.json").write_text(json.dumps({
             "session": "s9", "ts_start": f"2026-10-12T02:00:0{i}", "path": "/v1/messages?beta=true",
             "request_body": text, "request_body_sha256": ko.sha(text.encode())}))
+    fw = ko.load_raw(tmp / "raw", forwarded=True)
+    check("forwarded: pre-fwd holds the bytes tap-pre forwarded (.fwd.body), post-fwd = post body",
+          fw["pre-fwd"][0]["body"] == ko.dumps(shuffled) and fw["post-fwd"][0]["body"] == fw["post"][0]["body"])
     reqs = ko.load_raw(tmp / "raw")
     tap_reqs, bad = ko.load_tap(tmp / "tap")
     reqs["tap"] = tap_reqs
