@@ -15,8 +15,8 @@ deployment:
 
 nginx_config:
   error_log_level: warn
-  # Key-order lab Phase 4 runs 1 and 4 workers (APISIX_WORKER_PROCESSES in the compose env).
-  worker_processes: ${{APISIX_WORKER_PROCESSES:=auto}}
+  # Key-order lab Phase 4 runs 1 and 4 workers (make: APISIX_WORKER_PROCESSES=1|4, passed as LAB_APISIX_WORKERS).
+  worker_processes: ${{LAB_APISIX_WORKERS:=auto}}
   http_configuration_snippet: |
     # SSE: pass upstream chunks to the client as soon as they arrive.
     proxy_buffering off;

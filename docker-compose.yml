@@ -22,7 +22,8 @@ services:
   apisix:
     image: apache/apisix:${APISIX_IMAGE_TAG:-3.11.0-debian}
     environment:
-      APISIX_WORKER_PROCESSES: ${APISIX_WORKER_PROCESSES:-auto}
+      # Not APISIX_WORKER_PROCESSES itself: APISIX reads that name directly and needs a number.
+      LAB_APISIX_WORKERS: ${APISIX_WORKER_PROCESSES:-auto}
     depends_on:
       apisix-render:
         condition: service_completed_successfully
