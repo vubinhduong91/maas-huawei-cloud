@@ -121,3 +121,27 @@ Ngày đầu trên máy mới, từng bước: `docs/new-pc-setup.md`.
   (TTL, eviction, routing, block, `cache_control`), không phải lỗi client.
 - **Estimated MaaS cost:** chỉ tính request tới MaaS.
 - **Findings:** ở cuối (`docs/findings.md`).
+
+## Lab key-order drift
+
+Điều tra việc thứ tự key trong `tools[].input_schema.properties` (và các dict khác) đổi giữa các request cùng
+session, làm giảm cache hit. Đường đo: `Claude Code → tap-pre :9001 → APISIX → tap-post (tap mode B) → MaaS`;
+hai tap byte-transparent, ghi nguyên bytes vào `logs/raw/{pre,post}/`. Kết luận: `docs/keyorder-findings.md`;
+chi tiết từng phase: các mục "Lab key-order drift" trong `ASSUMPTIONS.md`.
+
+| Phase | Việc | Lệnh |
+|---|---|---|
+| 1 | Bật tap-pre (lab đang ở mode B) / test analyzer | `make keyorder-up` / `make test-keyorder` |
+| 1 | Phân tích drift offline (4 tầng dict, ghép pre/post) | `make keyorder ARGS="--session <id> --forwarded"` |
+| 2 | Session Claude Code cố định (2a built-in, 2b + MCP `lab-tfs`) | `make keyorder-session V=2b` |
+| 3 | Tác động cache theo vị trí drift (gọi thẳng MaaS) | `python3 scenarios/keyorder_cache.py` |
+| 4 | Profile gateway P0/P1/P2 × số worker | `bash scenarios/keyorder_phase4.sh` |
+| 5 | Replay qua echo server, chỉ ghi hash (0 token) | `bash scenarios/keyorder_phase5.sh`; công cụ cho team gateway: `scenarios/replay/` |
+| 6 | Kiểm chứng fix (P2S `stably_encode`, tap-post canon) | `bash scenarios/keyorder_phase6.sh` |
+| 7 | Báo cáo cuối / gói bằng chứng | `make keyorder-report` → `reports/keyorder-report.md`; `make keyorder-evidence` → `reports/keyorder-evidence-<ts>.tar.gz` |
+
+Profile gateway (`LAB_GATEWAY_PROFILE`, mặc định P0): **P0** không đụng body; **P2** pre-function decode +
+`core.json.encode` (cjson); **P2S** như P2 nhưng `core.json.stably_encode`; **P1** `ai-proxy` (APISIX 3.14.1).
+Script phase 4–6 tự khôi phục lab về P0 / APISIX 3.11 / tap passthrough khi xong. Gói bằng chứng gồm report,
+log chạy, log hash của replay, `replay.py` và một ví dụ drift (body pre/post, `metadata.user_id` đã che); script
+dừng nếu thấy bất kỳ key nào trong `.env`.
