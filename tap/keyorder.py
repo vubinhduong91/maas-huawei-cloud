@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 LAYERS = ("top-level", "content block", "tools", "tool_use.input", "other")
@@ -331,14 +332,46 @@ def analyze(reqs_by_source, since=None, session=None):
             "any_drift": sum(1 for t in trans if t["drifts"]),
         }
     pre = {r["id"]: r for r in selected.get("pre", [])}
+    used = set()
+    unmatched = []
     for r in selected.get("post", []):
         if r["id"] in pre:
-            p = pre[r["id"]]
-            d = body_diff(p["fwd_body"], r["body"])
-            d.update(req_id=r["id"], session=r["session"],
-                     pre_transform=(p["meta"].get("transform") or {}).get("mode"))
-            result["pairs"].append(d)
+            used.add(r["id"])
+            result["pairs"].append(pair(pre[r["id"]], r, "req_id"))
+        else:
+            unmatched.append(r)
+    # A gateway that drops X-Lab-Req-Id (ai-proxy): the latest unpaired tap-pre request of
+    # the same session sent at most PAIR_WINDOW_S before tap-post saw it.
+    for r in sorted(unmatched, key=lambda r: r["ts"]):
+        t_post = parse_ts(r["ts"])
+        best = None
+        for p in selected.get("pre", []):
+            if p["id"] in used or p["session"] != r["session"] or t_post is None:
+                continue
+            t_pre = parse_ts(p["ts"])
+            if t_pre is not None and 0 <= t_post - t_pre <= PAIR_WINDOW_S and (best is None or p["ts"] > best["ts"]):
+                best = p
+        if best:
+            used.add(best["id"])
+            result["pairs"].append(pair(best, r, "session+time"))
     return result
+
+
+PAIR_WINDOW_S = 30
+
+
+def parse_ts(ts):
+    try:
+        return datetime.fromisoformat(ts).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def pair(p, r, how):
+    d = body_diff(p["fwd_body"], r["body"])
+    d.update(req_id=p["id"], post_id=r["id"], session=r["session"], pair_by=how,
+             pre_transform=(p["meta"].get("transform") or {}).get("mode"))
+    return d
 
 
 # ---- report -----------------------------------------------------------------------------

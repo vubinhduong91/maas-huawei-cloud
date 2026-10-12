@@ -74,6 +74,7 @@ class Config:
     shuffle_tool_index: int = 0
     shuffle_seed: int = None        # None = new random seed per request (logged)
     raw_dir: Path = None            # <TAP_RAW_DIR>/<name>/<req_id>.body|.json
+    raw_all: bool = False           # mode B: raw files also without X-Lab-Req-Id
 
 
 def load_config(environ=os.environ):
@@ -114,6 +115,7 @@ def load_config(environ=os.environ):
         shuffle_tool_index=int(environ.get("TAP_SHUFFLE_TOOL_INDEX", "0")),
         shuffle_seed=int(seed) if seed else None,
         raw_dir=Path(raw_dir) / tap_name if raw_dir else None,
+        raw_all=environ.get("TAP_RAW_ALL", "").strip().lower() in ("1", "true", "yes", "on"),
     )
 
 
@@ -407,6 +409,8 @@ def make_handler(cfg, mode, http, sessions):
         forward = [(k, v) for k, v in received
                    if k.lower() not in HOP_BY_HOP and not k.lower().startswith(LAB_HEADER_PREFIX)]
         req_id = str(uuid.uuid4()) if mode == "P" else lab.get(REQ_ID_HEADER.lower())
+        if req_id is None and mode == "B" and cfg.raw_all:
+            req_id = "untagged-" + str(uuid.uuid4())   # matched to tap-pre by session + time
 
         origin, target = cfg.upstream_origin, "maas"
         if mode == "P":

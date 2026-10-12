@@ -173,6 +173,19 @@ q = req(None, 0, source="post", raw=ko.dumps(b))
 q["id"] = "x"
 check("pre/post uses tap-pre forwarded body", ko.analyze({"pre": [p], "post": [q]})["pairs"][0]["verdict"] == "identical")
 
+# 11b. gateway dropped the req id: pair by session + time (latest earlier pre within 30 s)
+p1 = req(None, 0, source="pre", raw=pre_body, ts="2026-10-12T00:00:01+00:00")
+p2 = req(None, 0, source="pre", raw=pre_body, ts="2026-10-12T00:00:10+00:00")
+q1 = req(None, 0, source="post", raw=ko.dumps(dict(base(), stream_options={"include_usage": True})),
+         ts="2026-10-12T00:00:11+00:00")
+q2 = req(None, 0, source="post", raw=pre_body, ts="2026-10-12T00:05:00+00:00")
+for x, i in ((p1, "a"), (p2, "b"), (q1, "untagged-1"), (q2, "untagged-2")):
+    x["id"], x["fwd_body"] = i, x["body"]
+res = ko.analyze({"pre": [p1, p2], "post": [q1, q2]})["pairs"]
+check("pair by session+time: nearest earlier pre, outside window left unpaired, content change seen",
+      len(res) == 1 and res[0]["req_id"] == "b" and res[0]["pair_by"] == "session+time"
+      and res[0]["verdict"] == "content differs", res)
+
 # 12. json_path_at
 doc = b'{"a":[1,{"b":{"c":"x,y","d":2}}],"e":{}}'
 check("json_path_at: inside nested object / array / string with comma",

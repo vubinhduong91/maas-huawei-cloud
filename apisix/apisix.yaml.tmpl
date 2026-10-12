@@ -66,6 +66,18 @@ routes:
                 core.request.set_header(ctx, "x-api-key", key)
               end
               core.request.set_header(ctx, "authorization", nil)
+              -- Key-order lab profile P2 only (positive control): decode the body and set
+              -- it again as re-encoded by core.json (lua-cjson), as a body-touching plugin would.
+              if @{REENCODE_LUA} then
+                local raw = core.request.get_body(nil, ctx)
+                local ok, req = pcall(core.json.decode, raw or "")
+                if ok and type(req) == "table" then
+                  local out = core.json.encode(req)
+                  if out then
+                    ngx.req.set_body_data(out)
+                  end
+                end
+              end
             end
       key-auth:
         header: x-api-key
@@ -76,6 +88,7 @@ routes:
           set: @{HEADERS_SET}
 @{HEADERS_REMOVE}
 @{PASSTHROUGH_PLUGINS}
+@{AI_PROXY}
       file-logger:
         path: /usr/local/apisix/logs/lab/requests.log
         # With log_format set, APISIX 3.11 ignores include_req_body/max_req_body_bytes and

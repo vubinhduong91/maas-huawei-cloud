@@ -7,6 +7,9 @@ services:
     env_file: .env
     environment:
       LAB_MODE: ${LAB_MODE:-A}   # set by `make up MODE=...`
+      # Key-order lab Phase 4: P0 (default) | P1 (ai-proxy, needs APISIX_IMAGE_TAG=3.14.1-debian)
+      # | P2 (pre-function decodes and re-encodes the body with core.json)
+      LAB_GATEWAY_PROFILE: ${LAB_GATEWAY_PROFILE:-P0}
     volumes:
       - ./apisix:/src:ro
       - apisix-rendered:/out
@@ -18,6 +21,8 @@ services:
   # The APISIX container never receives MAAS_API_KEY as an env var.
   apisix:
     image: apache/apisix:${APISIX_IMAGE_TAG:-3.11.0-debian}
+    environment:
+      APISIX_WORKER_PROCESSES: ${APISIX_WORKER_PROCESSES:-auto}
     depends_on:
       apisix-render:
         condition: service_completed_successfully
@@ -53,6 +58,9 @@ services:
       TAP_MODE: ${TAP_POST_MODE:-passthrough}
       TAP_SHUFFLE_TOOL_INDEX: ${TAP_POST_SHUFFLE_TOOL_INDEX:-0}
       TAP_SHUFFLE_SEED: ${TAP_POST_SHUFFLE_SEED:-}
+      # 1 = raw files for every request, not only those tagged by tap-pre (needed when the
+      # gateway drops X-Lab-Req-Id, e.g. ai-proxy in profile P1).
+      TAP_RAW_ALL: ${TAP_POST_RAW_ALL:-0}
     user: "${LAB_UID:-1000}:${LAB_GID:-1000}"   # log files owned by the host user
     volumes:
       - ./logs/tap:/logs

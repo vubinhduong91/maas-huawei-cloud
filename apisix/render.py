@@ -72,6 +72,30 @@ def lab_mode():
     return mode
 
 
+def gateway_profile():
+    profile = os.environ.get("LAB_GATEWAY_PROFILE", "P0").strip().upper() or "P0"
+    if profile not in ("P0", "P1", "P2"):
+        die(f"LAB_GATEWAY_PROFILE must be P0, P1 or P2, got {profile!r}")
+    return profile
+
+
+# Key-order lab profile P1: an AI gateway plugin that decodes the body, overrides `model`
+# and sends core.json.encode(body) itself (APISIX >= 3.12: provider openai-compatible
+# accepts any JSON body; 3.11 only validates OpenAI chat bodies). It only sends the headers
+# configured here, so the client's X-Lab-* / anthropic-* headers do not reach the tap.
+AI_PROXY = """\
+      ai-proxy:
+        provider: openai-compatible
+        auth:
+          header: {auth}
+        options:
+          model: {model}
+        override:
+          endpoint: {endpoint}
+        timeout: 600000
+        ssl_verify: false"""
+
+
 def passthrough_enabled():
     return os.environ.get("ANTHROPIC_PASSTHROUGH", "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -136,10 +160,12 @@ def render(redacted):
         # the tap records and strips x-lab-* before forwarding, so MaaS sees mode A bytes.
         node_scheme, node_host, node_port = "http", "tap", 9090
         lab_headers = {"X-Lab-Consumer": "$consumer_name", "X-Lab-Request-Id": "$request_id"}
-    passthrough = passthrough_enabled()
+    profile = gateway_profile()
+    # ai-proxy answers the request itself, so the Claude passthrough cannot apply in P1.
+    passthrough = passthrough_enabled() and profile != "P1"
     print(f"render: LAB_MODE={mode}, APISIX upstream {node_scheme}://{node_host}:{node_port}, "
-          f"claude-* passthrough to api.anthropic.com: {'on' if passthrough else 'off'}",
-          file=sys.stderr)
+          f"claude-* passthrough to api.anthropic.com: {'on' if passthrough else 'off'}, "
+          f"gateway profile {profile}", file=sys.stderr)
     api_key = REDACTED if redacted else env("MAAS_API_KEY")
     auth_header = env("MAAS_AUTH_HEADER")
     auth_scheme = env("MAAS_AUTH_SCHEME", required=False)
@@ -174,6 +200,13 @@ def render(redacted):
             **({"scheme": "http", "host": q("tap"), "port": 9090} if mode == "B"
                else {"scheme": "https", "host": q("api.anthropic.com"), "port": 443})) if passthrough else "",
         PASSTHROUGH_PLUGINS=PASSTHROUGH_PLUGINS.format(to_tap="true" if mode == "B" else "false") if passthrough else "",
+        REENCODE_LUA="true" if profile == "P2" else "false",
+        AI_PROXY=AI_PROXY.format(
+            auth=json.dumps({auth_header: auth_value}),
+            model=q(env("MAAS_MODEL_MAIN")),
+            endpoint=q(f"http://tap:9090{prefix}/v1/messages?beta=true" if mode == "B"
+                       else f"{scheme}://{host}:{port}{prefix}/v1/messages?beta=true"),
+        ) if profile == "P1" else "",
         CONSUMERS=consumers,
     )
 

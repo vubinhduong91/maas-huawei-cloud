@@ -1,0 +1,8 @@
+# Key-order lab Phase 4 (short session, ~0.5M tokens): same tools as keyorder-session.txt.
+# Lines starting with "mcp:" run only in variant 2b.
+Use TaskCreate to create two tasks: "Add a Note property" and "Review the change". Then, using Glob or `ls` only, list the top-level folders of this repository in one line.
+mcp: Use the lab-tfs tool tfs_get_workitem to read work item 4211, then tfs_update_workitem to set state Active, priority 2 and custom_fields {"component": "DownloadTask", "estimate_hours": 3}.
+Use Grep to find where the download task entity class is defined under src/Domain, Read only that file, and use TaskUpdate to mark the first task in progress.
+Use the Agent tool to start a general-purpose subagent that finds which PublicAPI endpoint creates download tasks; it must report the file path and class name only.
+Use Edit to add a nullable string property `Note` to the download task entity, then use Bash to run `git diff --stat`.
+Use TaskUpdate to mark both tasks completed, then use Bash `git status --short` and write a two-line summary.
