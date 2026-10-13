@@ -10,6 +10,7 @@ set -a; . ./.env; set +a
 BASE="${APISIX_URL:-http://localhost:9080}"
 LOG_FILE="logs/apisix/requests.log"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+touch "$TMP/start"   # step 4 only scans files written during this run (logs/ grows to GBs)
 PASS=0; FAIL=0
 ok()   { echo "PASS  $*"; PASS=$((PASS + 1)); }
 fail() { echo "FAIL  $*"; FAIL=$((FAIL + 1)); }
@@ -77,14 +78,18 @@ if [[ -z "${MAAS_API_KEY:-}" ]]; then
 else
   docker compose logs --no-color apisix apisix-render > "$TMP/compose.log" 2>&1
   leaks=0
+  find logs -type f -newer "$TMP/start" -print0 > "$TMP/written"
   for secret in "$MAAS_API_KEY" "$DEV1_KEY" "$DEV2_KEY"; do
-    if grep -rqF -- "$secret" logs/ "$TMP/compose.log"; then leaks=1; fi
+    if grep -qF -- "$secret" "$TMP/compose.log" ||
+       xargs -0 -r grep -lF -- "$secret" < "$TMP/written" | grep -q .; then leaks=1; fi
   done
-  [[ $leaks == 0 ]] && ok "4a MAAS_API_KEY and dev keys absent from logs/ and container logs" \
+  [[ $leaks == 0 ]] && ok "4a MAAS_API_KEY and dev keys absent from logs written by this run and container logs" \
                     || fail "4a a key was found in logs/ or container logs"
 fi
 
-if [[ -s "$LOG_FILE" ]] && python3 - "$LOG_FILE" "$DEV1_NAME" <<'EOF'
+# Only the tail of the log: it is never rotated and can reach GBs.
+if [[ -s "$LOG_FILE" ]] && tail -n 500 "$LOG_FILE" > "$TMP/log-tail" &&
+   python3 - "$TMP/log-tail" "$DEV1_NAME" <<'EOF'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
 mine = [r for r in rows if r.get("consumer") == sys.argv[2] and str(r.get("status")) == "200"]

@@ -17,6 +17,7 @@ TAPC="${TAP_URL:-http://localhost:9091}"
 BIG_KB="${BIG_KB:-600}"
 RUN="p2-$(date +%Y%m%d%H%M%S)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+touch "$TMP/start"   # step 6 only scans records written during this run
 PASS=0; FAIL=0
 ok()   { echo "PASS  $*"; PASS=$((PASS + 1)); }
 fail() { echo "FAIL  $*"; FAIL=$((FAIL + 1)); }
@@ -138,10 +139,11 @@ fi
 
 echo "== 6. secrets not in tap logs"
 leaks=0
+find logs/tap -type f -newer "$TMP/start" -print0 > "$TMP/written"
 for secret in "$MAAS_API_KEY" "$DEV1_KEY" "$DEV2_KEY"; do
-  grep -rqF -- "$secret" logs/tap/ && leaks=1
+  xargs -0 -r grep -lF -- "$secret" < "$TMP/written" | grep -q . && leaks=1
 done
-[[ $leaks == 0 ]] && ok "6 no MaaS/dev key in logs/tap" || fail "6 a key was found in logs/tap"
+[[ $leaks == 0 ]] && ok "6 no MaaS/dev key in logs/tap (records of this run)" || fail "6 a key was found in logs/tap"
 
 echo
 echo "run id: $RUN   records: logs/tap/$RUN-*"
