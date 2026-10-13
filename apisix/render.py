@@ -74,8 +74,8 @@ def lab_mode():
 
 def gateway_profile():
     profile = os.environ.get("LAB_GATEWAY_PROFILE", "P0").strip().upper() or "P0"
-    if profile not in ("P0", "P1", "P2", "P2S", "P3"):
-        die(f"LAB_GATEWAY_PROFILE must be P0, P1, P2, P2S or P3, got {profile!r}")
+    if profile not in ("P0", "P1", "P2", "P2S", "P3", "P4", "P5"):
+        die(f"LAB_GATEWAY_PROFILE must be P0, P1, P2, P2S, P3, P4 or P5, got {profile!r}")
     return profile
 
 
@@ -150,6 +150,13 @@ PASSTHROUGH_PLUGINS = """\
             end"""
 
 
+def hubfix_module(name, var):
+    """apisix/hubfix/<name>.lua as a local of the pre-function chunk (loaded once per config)."""
+    code = (HERE / "hubfix" / f"{name}.lua").read_text(encoding="utf-8")
+    lines = [f"local {var} = (function()"] + code.rstrip().splitlines() + ["end)()"]
+    return "\n".join(("            " + l) if l.strip() else "" for l in lines)
+
+
 def render(redacted):
     scheme, host, port, prefix = parse_base_url(env("MAAS_BASE_URL"))
     mode = lab_mode()
@@ -202,7 +209,11 @@ def render(redacted):
         PASSTHROUGH_PLUGINS=PASSTHROUGH_PLUGINS.format(to_tap="true" if mode == "B" else "false") if passthrough else "",
         REENCODE_LUA="true" if profile in ("P2", "P2S") else "false",
         REENCODE_FN="core.json.stably_encode" if profile == "P2S" else "core.json.encode",
-        HUBFIX_P3_LUA="true" if profile == "P3" else "false",
+        HUBFIX_P3_LUA="true" if profile in ("P3", "P5") else "false",
+        HUBFIX_ENCODE_FN="hubfix_stable.encode" if profile == "P5" else "core.json.encode",
+        HUBFIX_P4_LUA="true" if profile == "P4" else "false",
+        HUBFIX_MODULE=(hubfix_module("patch", "hubfix") if profile == "P4"
+                       else hubfix_module("stable_encode", "hubfix_stable") if profile == "P5" else ""),
         HUBFIX_GLM_MODEL=json.dumps(env("MAAS_MODEL_MAIN")),
         AI_PROXY=AI_PROXY.format(
             auth=json.dumps({auth_header: auth_value}),

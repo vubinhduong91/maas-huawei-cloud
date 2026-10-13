@@ -12,7 +12,7 @@ ifneq ($(MODE),A)
 export COMPOSE_PROFILES := tap
 endif
 
-.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down analyze test-analyze scenario report keyorder-up keyorder-down keyorder test-keyorder keyorder-session keyorder-report keyorder-evidence
+.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down analyze test-analyze scenario report keyorder-up keyorder-down keyorder test-keyorder keyorder-session keyorder-report keyorder-evidence test-hubfix
 
 # Call MaaS directly to verify auth header / count_tokens / model names.
 probe:
@@ -114,6 +114,17 @@ keyorder:
 
 test-keyorder:
 	python3 tap/test_keyorder.py
+
+# Hub-fix P4 unit tests: fixtures (synthetic + real Sonnet bodies from tap-pre when present,
+# written to logs/hubfix/fixtures, outside git) checked by LuaJIT + lua-cjson of the APISIX image.
+test-hubfix:
+	python3 scenarios/hubfix_fixtures.py $(if $(wildcard logs/raw/pre),--from-raw logs/raw/pre)
+	docker run --rm --entrypoint /usr/local/openresty/luajit/bin/luajit \
+	  -v $(CURDIR)/apisix/hubfix:/hubfix:ro -v $(CURDIR)/logs/hubfix/fixtures:/fixtures:ro \
+	  apache/apisix:3.11.0-debian /hubfix/test_patch.lua /fixtures
+	docker run --rm --entrypoint /usr/local/openresty/luajit/bin/luajit \
+	  -v $(CURDIR)/apisix/hubfix:/hubfix:ro -v $(CURDIR)/logs/hubfix/fixtures:/fixtures:ro \
+	  apache/apisix:3.11.0-debian /hubfix/test_stable_encode.lua /fixtures
 
 # Phase 7: docs/keyorder-findings.md + latest phase summaries -> reports/keyorder-report.md;
 # keyorder-evidence also packs reports, run/replay logs and one drift example into

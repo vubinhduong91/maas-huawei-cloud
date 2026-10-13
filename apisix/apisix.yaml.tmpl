@@ -29,6 +29,7 @@ routes:
         phase: rewrite
         functions:
           - |
+@{HUBFIX_MODULE}
             return function(conf, ctx)
               -- Developer key, first found of: X-Lab-Key (sent through ANTHROPIC_CUSTOM_HEADERS
               -- when Claude Code is logged in with a Claude subscription), x-api-key
@@ -51,6 +52,8 @@ routes:
               -- re-encode the WHOLE body with core.json.encode (lua-cjson). Runs before the
               -- passthrough check, so a mapped Sonnet request goes to MaaS and other claude-*
               -- models still go to Anthropic. Every MaaS-bound body is re-encoded, edited or not.
+              -- P5: the same with a sorted-key encoder (apisix/hubfix/stable_encode.lua: dkjson, as
+              -- core.json.stably_encode, plus the null / empty-object handling it lacks).
               if @{HUBFIX_P3_LUA} then
                 local raw = core.request.get_body(nil, ctx)
                 local ok, req = pcall(core.json.decode, raw or "")
@@ -66,11 +69,28 @@ routes:
                     end
                   end
                   if type(req.model) ~= "string" or req.model:sub(1, 7) ~= "claude-" then
-                    local out = core.json.encode(req)
+                    local out = @{HUBFIX_ENCODE_FN}(req)
                     if out then
                       ngx.req.set_body_data(out)
                     end
                   end
+                end
+              end
+              -- Hub-fix lab profile P4: the same mapping, but only the bytes of those two values
+              -- are replaced in the original body (apisix/hubfix/patch.lua); when they cannot be
+              -- located and confirmed the original body is forwarded unchanged. The lab header
+              -- x-lab-hubfix (recorded by tap-post, removed before MaaS) tells which case it was.
+              if @{HUBFIX_P4_LUA} then
+                local raw = core.request.get_body(nil, ctx)
+                if raw then
+                  local status, out, reason = hubfix.patch(raw, {
+                    decode = core.json.decode, glm_model = @{HUBFIX_GLM_MODEL} })
+                  if status == "patched" then
+                    ngx.req.set_body_data(out)
+                  elseif status == "fallback" then
+                    core.log.warn("hubfix: forwarding the original body: ", reason)
+                  end
+                  core.request.set_header(ctx, "x-lab-hubfix", status .. (reason and (": " .. reason) or ""))
                 end
               end
               if PASSTHROUGH then
