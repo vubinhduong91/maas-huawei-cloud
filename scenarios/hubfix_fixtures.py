@@ -139,12 +139,12 @@ def cases(base, obj):
     yield f"{base}-big-{len(bigt) // 1000}k", fill(bigt, SONNET, "medium"), fill(bigt, GLM, "high"), "patched", ""
     # fallbacks: the original body must be forwarded as it is
     esc = flat.replace('"model":' + json.dumps(M), '"\\u006dodel":' + json.dumps(M), 1)
-    yield f"{base}-escaped-key", fill(esc, SONNET, "medium"), None, "fallback", "not found"
+    yield f"{base}-escaped-key", fill(esc, SONNET, "medium"), None, "fallback", "escaped key model"
     escv = fill(flat.replace(json.dumps(E), '"medi\\u0075m"'), SONNET, "")
     yield f"{base}-escaped-value", escv, None, "fallback", "do not match"
     dup = fill(flat, SONNET, "medium")
     yield f"{base}-duplicate-model", '{"model":"claude-sonnet-5-5",' + dup[1:], None, "fallback", "duplicate"
-    yield f"{base}-truncated", fill(flat, SONNET, "medium")[:-50], None, "fallback", "not valid JSON"
+    yield f"{base}-truncated", fill(flat, SONNET, "medium")[:-50], None, "fallback", "scan: "
 
 
 def main():

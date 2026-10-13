@@ -32,7 +32,8 @@ def tag_of(rec):
     return None
 
 
-def load(source, tags):
+def load(source, windows):
+    """{tag: [records]} of this run only: the tag AND its send window (a tag is reused by reruns)."""
     out = {}
     for p in glob.glob(os.path.join(LAB, "logs/raw", source, "*.json")):
         try:
@@ -41,7 +42,7 @@ def load(source, tags):
         except (OSError, ValueError):
             continue
         t = tag_of(r)
-        if t in tags:
+        if t in windows and windows[t][0] <= (r.get("ts_start") or "") <= windows[t][1]:
             out.setdefault(t, []).append(r)
     return out
 
@@ -55,10 +56,15 @@ def main():
     ap.add_argument("--windows", required=True)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    windows = {}
     with open(a.windows, encoding="utf-8") as f:
-        tags = [json.loads(l)["tag"] for l in f if l.strip()]
-    tags = [t for t in dict.fromkeys(tags) if t.startswith("overhead/")]
-    pre, post = load("pre", set(tags)), load("post", set(tags))
+        for line in f:
+            if line.strip():
+                w = json.loads(line)
+                if w["tag"].startswith("overhead/"):
+                    windows[w["tag"]] = (w["start"], w["end"])
+    tags = list(windows)
+    pre, post = load("pre", windows), load("post", windows)
     sizes = {}
     for p in glob.glob(os.path.join(LAB, "logs/replay/bodies-hubfix-overhead", "*.json")):
         sizes[os.path.basename(p)] = os.path.getsize(p)

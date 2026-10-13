@@ -3,8 +3,8 @@
 **P4 (sửa đúng byte) đạt cả 4 tiêu chí của spec. Cache hit của nó bằng hoặc cao hơn P0 (95,6% / 92,0% so với
 92,3% / 89,0%).** P3, tức cách Hub đang làm, hết lỗi 400 nhưng chỉ còn 53–56% cache hit. P5 (encode lại với
 thứ tự key ổn định) hết drift nhưng thấp hơn P4 3–10 điểm và chậm gấp khoảng 10 lần. Overhead p95 của P4 ở body
-160K token là 9,8 ms (4 worker) và 11,1 ms (1 worker): hơi vượt ngưỡng 10 ms ở 1 worker, nhưng chỉ chậm hơn cách
-Hub đang làm (P3) khoảng 1–2 ms.
+160K token là 7,3 ms (4 worker) và 7,8 ms (1 worker), dưới ngưỡng 10 ms và nhanh hơn cách Hub đang làm (P3,
+8,5–9,4 ms). Đây là bản P4 v2, đã bỏ một lần decode; bản đầu (v1) là 9,8 / 11,1 ms.
 
 Môi trường: ECS Singapore, APISIX 3.11.0, MaaS `glm-5.3` (`ap-southeast-1`), Claude Code 2.1.292 trên Windows
 (đăng nhập Claude Pro), ngày 2026-10-13. Mapping đã duyệt ở Phase 0 (`docs/hubfix-phase0.md`): Sonnet →
@@ -29,7 +29,7 @@ hub-fix"; report trên ECS: `reports/hubfix-phase3-*.md`.
 | Cache hit MaaS, effort mặc định (2 session, gộp token) | 92,3% | 56,1% | **95,6%** | 85,5% |
 | Cache hit MaaS, effort xhigh / max (2 session) | 89,0% | 53,0% | **92,0%** | 88,4% |
 | Drift loại 1 ra khỏi gateway (session) | 0% | 28–32% | **0%** | 0% |
-| Xử lý body, p95, body 160K token (4 / 1 worker) | – | 9,2 / 8,8 ms | **9,8 / 11,1 ms** | 64 / 63 ms |
+| Xử lý body, p95, body 160K token (4 / 1 worker) | – | 9,2–9,4 / 8,5–8,8 ms | **7,3 / 7,8 ms** (v2) | 64 / 63 ms |
 
 Ở replay, P0 nhận body đã map sẵn, nên "giống client" ở cột P0 nghĩa là giống body mà client đó gửi.
 
@@ -60,27 +60,34 @@ session affinity.
 concurrency 1, upstream là echo. Body 50K = 230 KB = 49.616 token; body 160K = 820 KB = 159.220 token (đếm trên
 MaaS).
 
+Hai lần đo (run `20261013-040822` cho tất cả; run `20261013-054007` cho P0/P3/P4 v2):
+
 | Cấu hình | 50K p50 / p95 (ms) | 160K p50 / p95 (ms) | Thêm vào end-to-end so với P0, 160K p50 (ms) |
 |---|---|---|---:|
-| P3, 4 worker | 1,7 / 5,8 | 4,6 / 9,2 | 4,7 |
-| P3, 1 worker | 1,6 / 4,6 | 4,4 / 8,8 | 4,0 |
-| **P4, 4 worker** | 2,1 / 6,0 | 5,4 / **9,8** | 4,4 |
-| **P4, 1 worker** | 2,3 / 6,3 | 6,0 / **11,1** | 5,3 |
+| P3, 4 worker (run 1 / run 2) | 1,7 / 5,8 · 1,6 / 5,2 | 4,6 / 9,2 · 4,5 / 9,4 | 4,7 · 3,0 |
+| P3, 1 worker (run 1 / run 2) | 1,6 / 4,6 · 1,6 / 5,4 | 4,4 / 8,8 · 4,2 / 8,5 | 4,0 · 2,8 |
+| **P4 v2, 4 worker** | 1,5 / 5,2 | 3,8 / **7,3** | 1,5 |
+| **P4 v2, 1 worker** | 1,5 / 5,6 | 3,2 / **7,8** | 1,9 |
+| P4 v1, 4 worker | 2,1 / 6,0 | 5,4 / 9,8 | 4,4 |
+| P4 v1, 1 worker | 2,3 / 6,3 | 6,0 / 11,1 | 5,3 |
 | P5, 4 worker | 12,4 / 15,9 | 59,7 / 64,1 | 58,4 |
 | P5, 1 worker | 12,2 / 15,9 | 59,3 / 63,5 | 59,3 |
 
-- **P4 vượt 10 ms ở 1 worker (p95 11,1 ms).** Lý do: P4 decode cả body hai lần, một lần để đọc giá trị và một lần
-  để xác nhận kết quả, cộng thêm bước quét chuỗi. P3 decode một lần và encode một lần.
-- **Cách giảm** (chưa làm, chờ duyệt): đọc `model`/`effort` thẳng từ bước quét thay vì decode lần đầu. Như vậy
-  chỉ còn một lần decode để xác nhận, ước giảm khoảng 2 ms ở 160K. Bỏ cả bước decode xác nhận thì nhanh hơn nữa,
-  nhưng mất lớp kiểm tra mà spec yêu cầu.
-- So với Hub hiện tại (P3), P4 chỉ thêm khoảng 0,6–2,3 ms p95 ở 160K. P5 tốn 60–64 ms vì dkjson viết bằng Lua
-  thuần; không nên dùng ở body lớn.
+- **P4 v1 vượt 10 ms ở 1 worker (p95 11,1 ms)** vì decode cả body hai lần: một lần để đọc giá trị, một lần để xác
+  nhận kết quả. **P4 v2** đọc `model`/`effort` thẳng từ bước quét (mỗi giá trị là một chuỗi ngắn, decode riêng),
+  nên chỉ còn một lần decode cả body để xác nhận. Kết quả: p95 7,3–7,8 ms, nhanh hơn P3. Unit test vẫn 69/69,
+  replay vẫn 360/360 đúng byte.
+- Lớp kiểm tra của v2: decode bản đã sửa, `model` và `output_config.effort` phải đúng giá trị mới. Phần "ngoài hai
+  giá trị không đổi" được đảm bảo bằng cách làm: chỉ thay hai đoạn byte ở độ sâu 1 có nội dung khớp giá trị cũ.
+  Key viết bằng escape (`model`) vẫn bị phát hiện và chuyển tiếp nguyên trạng.
+- Độ trễ end-to-end của mọi cấu hình ở run 2 cao hơn run 1 (P0 160K p50 81 ms so với 40 ms), có thể do tải hoặc
+  do thư mục log đã lớn hơn. Cột "thêm vào so với P0" so trong cùng run nên không bị ảnh hưởng.
+- P5 tốn 60–64 ms vì dkjson viết bằng Lua thuần; không nên dùng ở body lớn.
 
 ### 4. Khuyến nghị
 
 **Dùng P4.** P4 hết lỗi 400 như P3, giữ body client từng byte (trừ hai giá trị) và đưa cache hit về mức P0, với
-chi phí xử lý gần bằng cách Hub đang làm. P5 chỉ nên dùng khi Hub bắt buộc phải encode lại cả body vì lý do khác.
+chi phí xử lý thấp hơn cách Hub đang làm. P5 chỉ nên dùng khi Hub bắt buộc phải encode lại cả body vì lý do khác.
 Không dùng thẳng `core.json.stably_encode` (lỗi 500 khi body có `null`, đổi `{}` thành `[]`).
 
 ### 5. Chi phí và giới hạn
