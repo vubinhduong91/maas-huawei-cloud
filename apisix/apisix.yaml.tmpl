@@ -54,8 +54,11 @@ routes:
               -- models still go to Anthropic. Every MaaS-bound body is re-encoded, edited or not.
               -- P5: the same with a sorted-key encoder (apisix/hubfix/stable_encode.lua: dkjson, as
               -- core.json.stably_encode, plus the null / empty-object handling it lacks).
+              -- x-lab-hubfix-us (P3/P4/P5): CPU time of the body handling below in microseconds,
+              -- measured after the body is read (os.clock: no yield happens in between).
               if @{HUBFIX_P3_LUA} then
                 local raw = core.request.get_body(nil, ctx)
+                local t0 = os.clock()
                 local ok, req = pcall(core.json.decode, raw or "")
                 if ok and type(req) == "table" then
                   if type(req.model) == "string" and req.model:sub(1, 14) == "claude-sonnet-" then
@@ -75,6 +78,7 @@ routes:
                     end
                   end
                 end
+                core.request.set_header(ctx, "x-lab-hubfix-us", tostring(math.floor((os.clock() - t0) * 1e6)))
               end
               -- Hub-fix lab profile P4: the same mapping, but only the bytes of those two values
               -- are replaced in the original body (apisix/hubfix/patch.lua); when they cannot be
@@ -83,6 +87,7 @@ routes:
               if @{HUBFIX_P4_LUA} then
                 local raw = core.request.get_body(nil, ctx)
                 if raw then
+                  local t0 = os.clock()
                   local status, out, reason = hubfix.patch(raw, {
                     decode = core.json.decode, glm_model = @{HUBFIX_GLM_MODEL} })
                   if status == "patched" then
@@ -91,6 +96,7 @@ routes:
                     core.log.warn("hubfix: forwarding the original body: ", reason)
                   end
                   core.request.set_header(ctx, "x-lab-hubfix", status .. (reason and (": " .. reason) or ""))
+                  core.request.set_header(ctx, "x-lab-hubfix-us", tostring(math.floor((os.clock() - t0) * 1e6)))
                 end
               end
               if PASSTHROUGH then

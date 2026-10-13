@@ -23,6 +23,7 @@ param(
     [ValidateSet("sonnet", "glm")] [string] $Client = "sonnet",
     [string] $Gateway = "?",
     [string] $Workers = "?",
+    [string] $Effort = "",      # passed to every prompt as --effort (empty: Claude Code's default)
     [string] $Server = "root@111.119.197.251",
     [string] $IdentityFile = "$env:USERPROFILE\.ssh\maas_ecs",
     [string] $ConfigDir = "$env:USERPROFILE\.claude-hubfix",
@@ -74,7 +75,7 @@ $turns = @(Get-Content $Prompts | Where-Object { $_.Trim() -and -not $_.TrimStar
 $version = (& claude --version) -join " "
 $session = [guid]::NewGuid().ToString()
 $started = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-Write-Host "hubfix-session: $Label client=$Client gateway=$Gateway w$Workers, $($turns.Count) prompts, $version, session $session"
+Write-Host "hubfix-session: $Label client=$Client gateway=$Gateway w$Workers effort=$(if ($Effort) { $Effort } else { 'default' }), $($turns.Count) prompts, $version, session $session"
 
 $done = 0; $errors = 0
 Push-Location $Repo
@@ -86,6 +87,7 @@ try {
         # claude-maas.ps1 escapes them again for claude.
         $a += @("-p", ($turns[$i] -replace '(\\*)"', '$1$1\"'), "--output-format", "json", "--permission-mode", "acceptEdits",
                 "--strict-mcp-config", "--mcp-config", $mcpCfg, "--allowedTools", $allowed)
+        if ($Effort) { $a += @("--effort", $Effort) }
         if ($i -eq 0) { $a += @("--session-id", $session) } else { $a += @("--resume", $session) }
         $t0 = Get-Date
         $ErrorActionPreference = "Continue"
@@ -105,7 +107,7 @@ try {
 }
 
 $rec = [ordered]@{ run_id = $runId; label = $Label; session = $session; client = $Client; gateway = $Gateway
-                   workers = $Workers; claude_version = $version; repo_commit = $commit; prompts_done = $done
+                   workers = $Workers; effort = $(if ($Effort) { $Effort } else { "default" }); claude_version = $version; repo_commit = $commit; prompts_done = $done
                    prompts_total = $turns.Count; prompt_errors = $errors; started = $started
                    ended = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }
 $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($rec | ConvertTo-Json -Compress) + "`n"))

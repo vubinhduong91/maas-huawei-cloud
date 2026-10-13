@@ -78,10 +78,15 @@ def main():
            "Effort pre → MaaS | Loại 1 ra khỏi gateway | Dấu vân tay cjson | non-200 MaaS | Cache hit MaaS | "
            "Tool lỗi (request cuối) |",
            "|---|---|---|---|---:|---:|---|---|---|---|---:|---:|---|"]
+    groups = {}
     for label, s in sorted(sessions.items(), key=lambda kv: kv[1].get("started", "")):
         sid = s["session"]
-        res = ko.analyze(raw, session=sid)
-        post = [r for r in raw.get("post", []) if r["session"] == sid]
+        # Only the session's own minutes: replay runs re-send its bodies, which carry its session id.
+        t0, t1 = s["started"][:19], s["ended"][:19]
+        own = {src: [r for r in reqs if r["session"] == sid and t0 <= r["ts"][:19] <= t1]
+               for src, reqs in raw.items()}
+        res = ko.analyze(own, session=sid)
+        post = own.get("post", [])
         maas = [r for r in post if (r["meta"].get("upstream_target") or "maas") != "anthropic"]
         anth = [r for r in post if r["meta"].get("upstream_target") == "anthropic"]
         rd = tot = bad = fp = 0
@@ -99,6 +104,15 @@ def main():
                 k = f"{effort(p['obj'])}→{effort(r['obj'])}"
                 efforts[k] = efforts.get(k, 0) + 1
         main_maas = [r for r in maas if len(r["obj"].get("tools") or []) >= 20]
+        t1n = (res["sources"].get("post") or {})
+        g = groups.setdefault((s.get("gateway"), s.get("client"), s.get("effort", "default")), [0, 0, 0, 0, 0, 0, []])
+        g[0] += 1
+        g[1] += rd
+        g[2] += tot
+        g[3] += bad
+        g[4] += (t1n.get("tools_change") or {}).get("key_order", 0)
+        g[5] += t1n.get("comparable", 0)
+        g[6].append(100.0 * rd / tot if tot else 0.0)
         out.append("| {} | {} | {} w{} | {}/{} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} |".format(
             label, s.get("client"), s.get("gateway"), s.get("workers"), s.get("prompts_done"),
             s.get("prompts_total"), len(maas), len(anth),
@@ -106,6 +120,15 @@ def main():
             ", ".join(f"{k} ×{v}" for k, v in sorted(efforts.items())),
             type1(res, "post"), fp, len(maas), bad,
             f"{100.0 * rd / tot:.1f}%" if tot else "-", tool_errors(main_maas)))
+    if len(sessions) > 1:
+        out += ["", "## Gộp theo cấu hình", "",
+                "| Gateway | Client | Effort | Session | Cache hit MaaS (gộp token) | Hit từng session | Loại 1 ra khỏi gateway | non-200 MaaS |",
+                "|---|---|---|---:|---:|---|---|---:|"]
+        for (gw, client, eff), g in sorted(groups.items(), key=lambda kv: (kv[0][2], kv[0][0] or "")):
+            out.append("| {} | {} | {} | {} | {} | {} | {}/{} ({}) | {} |".format(
+                gw, client, eff, g[0], f"{100.0 * g[1] / g[2]:.1f}%" if g[2] else "-",
+                " / ".join(f"{h:.1f}%" for h in g[6]), g[4], g[5],
+                f"{100.0 * g[4] / g[5]:.0f}%" if g[5] else "-", g[3]))
     out += ["", "Sessions: " + ", ".join(f"{k} `{v['session']}` ({v.get('claude_version')})"
                                         for k, v in sorted(sessions.items()))]
     path = Path(a.out) if Path(a.out).is_absolute() else LAB / a.out
