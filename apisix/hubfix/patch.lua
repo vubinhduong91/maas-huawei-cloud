@@ -186,7 +186,9 @@ function _M.patch(raw, opts)
         local name, old, new = e[1], e[2], e[3]
         if new then
             local span = spans[name]
-            local old_json, new_json = json_string(old), json_string(new)
+            -- The old value only has to be found byte for byte: a name like "claude-sonnet-5-5[1m]"
+            -- is fine, and one written with escapes never matches '"' .. old .. '"' -> fallback.
+            local old_json, new_json = type(old) == "string" and '"' .. old .. '"', json_string(new)
             if not old_json or not new_json then return "fallback", nil, name .. " value is not a plain string" end
             if sub(raw, span[1], span[2]) ~= old_json then
                 return "fallback", nil, name .. " bytes do not match the decoded value"

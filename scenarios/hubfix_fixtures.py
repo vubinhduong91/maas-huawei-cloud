@@ -147,6 +147,60 @@ def cases(base, obj):
     yield f"{base}-truncated", fill(flat, SONNET, "medium")[:-50], None, "fallback", "scan: "
 
 
+def edge_cases(obj):
+    """Request shapes Claude Code or another client may send that the real bodies do not cover."""
+    def variant(drop=(), **set_):
+        o = {k: v for k, v in json.loads(json.dumps(obj)).items() if k not in drop}
+        o.update(set_)
+        return template(o, drop_effort="output_config" in drop)
+    t = variant(drop=("stream",))
+    yield "edge-stream-absent", fill(t, SONNET, "medium"), fill(t, GLM, "high"), "patched", ""
+    t = variant(stream=False)
+    yield "edge-stream-false", fill(t, SONNET, "xhigh"), fill(t, GLM, "max"), "patched", ""
+    t = variant(drop=("thinking", "context_management"))
+    yield "edge-no-thinking", fill(t, SONNET, "medium"), fill(t, GLM, "high"), "patched", ""
+    t = variant(thinking={"type": "disabled"})
+    yield "edge-thinking-disabled", fill(t, SONNET, "low"), fill(t, GLM, "low"), "patched", ""
+    t = variant(thinking={"type": "enabled", "budget_tokens": 31999})
+    yield "edge-thinking-budget", fill(t, SONNET, "max"), fill(t, GLM, "max"), "patched", ""
+    # /v1/messages/count_tokens: model, messages, system, tools; no max_tokens/stream/output_config
+    t = variant(drop=("max_tokens", "stream", "output_config", "metadata", "context_management", "safeguards"))
+    yield "edge-count-tokens", fill(t, SONNET, ""), fill(t, GLM, ""), "patched", ""
+    # output_config with other members around effort (structured output)
+    o = json.loads(json.dumps(obj))
+    o["output_config"] = {"format": {"type": "json_schema", "schema": {"type": "object", "properties": {"effort": {"type": "string"}}}},
+                          "effort": E, "task_budget": {"total": 1000}}
+    o["model"] = M
+    t = dump(o)
+    yield "edge-output_config-other-members", fill(t, SONNET, "medium"), fill(t, GLM, "high"), "patched", ""
+    for name in ("claude-sonnet-4-5-20250929", "claude-sonnet-5-5[1m]", "claude-sonnet-4-5@20250929"):
+        yield f"edge-model-{name}", fill(t, name, "xhigh"), fill(t, GLM, "max"), "patched", ""
+    for name in ("claude-opus-4-1", "claude-3-5-sonnet-20241022", "sonnet", "glm-5.3[1m]"):
+        yield f"edge-model-untouched-{name}", fill(t, name, "low"), None, "unchanged", ""
+    flat = template(obj)
+    yield "edge-trailing-newline", fill(flat, SONNET, "medium") + "\n", fill(flat, GLM, "high") + "\n", "patched", ""
+    yield "edge-leading-whitespace", " \r\n" + fill(flat, SONNET, "medium"), " \r\n" + fill(flat, GLM, "high"), "patched", ""
+    # forwarded as they are: a BOM is not JSON (cjson rejects it too), so nothing can be mapped
+    yield "edge-bom", "﻿" + fill(flat, SONNET, "medium"), None, "unchanged", ""
+    yield "edge-empty-object", "{}", None, "unchanged", ""
+    nul = flat.replace(json.dumps(M), "null")
+    yield "edge-model-null", fill(nul, "", "medium"), fill(nul, "", "high"), "patched", ""
+    num = flat.replace(json.dumps(M), "5")
+    yield "edge-model-number", fill(num, "", "low"), None, "unchanged", ""
+    t = variant(drop=("output_config",)).replace('{', '{"output_config":null,', 1)
+    yield "edge-output_config-null", fill(t, SONNET, ""), fill(t, GLM, ""), "patched", ""
+    t = flat.replace(json.dumps(E), "null")
+    yield "edge-effort-null", fill(t, SONNET, ""), fill(t, GLM, ""), "patched", ""
+    yield "edge-effort-empty", fill(flat, SONNET, ""), fill(flat, GLM, ""), "patched", ""
+    dupe = fill(flat, SONNET, "medium")
+    yield "edge-duplicate-output_config", dupe[:-1] + ',"output_config":{"effort":"low"}}', None, "fallback", "duplicate"
+    top = '"output_config":{"effort":' + json.dumps(E)
+    t = flat.replace(top, '"output_config":{"effort":"low","effort":' + json.dumps(E))
+    yield "edge-duplicate-effort", fill(t, SONNET, "medium"), None, "fallback", "duplicate"
+    yield "edge-trailing-garbage", fill(flat, SONNET, "medium") + "x", None, "fallback", "trailing"
+    yield "edge-two-objects", fill(flat, SONNET, "medium") + "{}", None, "fallback", "trailing"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--from-raw", default="")
@@ -166,6 +220,11 @@ def main():
                 (out / f"{name}.out").write_bytes(body_out.encode("utf-8"))
             index.append({"name": name, "expect": expect, "reason": reason, "bytes": len(body_in.encode("utf-8"))})
         print(f"base {base}: {len(dump(obj)):,} bytes" + (f" (tap-pre body {size:,} bytes)" if size else ""))
+    for name, body_in, body_out, expect, reason in edge_cases(synthetic()):
+        (out / f"{name}.in").write_bytes(body_in.encode("utf-8"))
+        if body_out is not None:
+            (out / f"{name}.out").write_bytes(body_out.encode("utf-8"))
+        index.append({"name": name, "expect": expect, "reason": reason, "bytes": len(body_in.encode("utf-8"))})
     (out / "index.json").write_text(json.dumps(index, indent=1), encoding="utf-8")
     print(f"{len(index)} cases in {out}")
     return 0
