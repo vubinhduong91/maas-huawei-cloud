@@ -57,10 +57,16 @@ fi
 unset ANTHROPIC_API_KEY CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_SMALL_FAST_MODEL
 export ANTHROPIC_BASE_URL="$BASE_URL"
 export ANTHROPIC_AUTH_TOKEN="$KEY"
-export ANTHROPIC_MODEL="$MAAS_MODEL_MAIN"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="$MAAS_MODEL_MAIN"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="$MAAS_MODEL_MAIN"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MAAS_MODEL_FAST"
+if [[ "${LAB_NATIVE_MODELS:-0}" == 1 ]]; then
+  # Hub-fix lab: keep Claude Code's own model names (e.g. --model sonnet -> claude-sonnet-...),
+  # as a dev who picks Sonnet would send them to the gateway.
+  unset ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
+else
+  export ANTHROPIC_MODEL="$MAAS_MODEL_MAIN"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="$MAAS_MODEL_MAIN"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="$MAAS_MODEL_MAIN"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MAAS_MODEL_FAST"
+fi
 # Claude Code does not know GLM models and would assume a 200K window (auto-compact).
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${LAB_MAX_CONTEXT_TOKENS:-${MAAS_MAX_CONTEXT_TOKENS:-1000000}}"   # S6 forces a small window
 if [[ $BACKGROUND == 0 ]]; then
@@ -78,7 +84,7 @@ with open(path, "a") as f:
                         "dev": dev, "mode": mode, "background_traffic": bg == "1",
                         "claude_version": version, "args": args}) + "\n")
 EOF
-echo "claude: dev=$DEV mode=$MODE base=$BASE_URL model=$ANTHROPIC_MODEL fast=$ANTHROPIC_DEFAULT_HAIKU_MODEL" \
+echo "claude: dev=$DEV mode=$MODE base=$BASE_URL model=${ANTHROPIC_MODEL:-native} fast=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-native}" \
      "nonessential_traffic=$([[ $BACKGROUND == 1 ]] && echo on || echo off)" >&2
 cd "$SAMPLE"
 exec claude "$@"
