@@ -46,8 +46,15 @@ async def fake_upstream(request):
             {"type": "message_start", "message": {"model": "fake", "usage": {
                 "input_tokens": 100, "cache_read_input_tokens": 80,
                 "cache_creation_input_tokens": 0, "output_tokens": 0}}},
+            {"type": "content_block_start", "content_block": {"type": "text", "text": ""}},
             *[{"type": "content_block_delta", "delta": {"type": "text_delta", "text": str(i)}}
               for i in range(6)],
+            {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1",
+                                                              "name": "Read", "input": {}}},
+            {"type": "content_block_delta", "delta": {"type": "input_json_delta",
+                                                      "partial_json": '{"path": '}},
+            {"type": "content_block_delta", "delta": {"type": "input_json_delta",
+                                                      "partial_json": '"a.cs"}'}},
             {"type": "message_delta", "delta": {"stop_reason": "end_turn"},
              "usage": {"output_tokens": 6}},
             {"type": "message_stop"},
@@ -168,6 +175,10 @@ async def main():
     check("SSE record: ttft/message_start/total", rec["ttft_s"] is not None and
           rec["message_start_s"] is not None and rec["total_s"] >= 0.8 and
           rec["stop_reason"] == "end_turn", {k: rec[k] for k in ("ttft_s", "message_start_s", "total_s")})
+    check("SSE record: response content rebuilt",
+          rec["response_content"] == [{"type": "text", "text": "012345"},
+                                      {"type": "tool_use", "id": "t1", "name": "Read",
+                                       "input": {"path": "a.cs"}}], rec["response_content"])
 
     # 4. client disconnects mid-stream -> error client_disconnected / 499
     reader, writer = await asyncio.open_connection("127.0.0.1", B_PORT)

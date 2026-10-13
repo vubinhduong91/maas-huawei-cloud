@@ -244,6 +244,7 @@ class ResponseObserver:
         self.response_model = None
         self.stream_error = None
         self.events = 0
+        self.content = []   # assistant content blocks rebuilt from the stream (or the JSON body)
 
     def feed(self, chunk):
         if self.parse_note:
@@ -274,6 +275,17 @@ class ResponseObserver:
             message = event.get("message") or {}
             self.usage_start = message.get("usage")
             self.response_model = message.get("model")
+        elif kind == "content_block_start":
+            block = dict(event.get("content_block") or {})
+            if block.get("type") == "tool_use":
+                block["input"] = ""   # filled from input_json_delta, parsed in finish()
+            self.content.append(block)
+        elif kind == "content_block_delta" and self.content:
+            block, delta = self.content[-1], event.get("delta") or {}
+            for src, dst in (("text", "text"), ("thinking", "thinking"),
+                             ("partial_json", "input"), ("signature", "signature")):
+                if isinstance(delta.get(src), str):
+                    block[dst] = (block.get(dst) or "") + delta[src]
         elif kind == "message_delta":
             self.usage_delta = event.get("usage")
             self.stop_reason = (event.get("delta") or {}).get("stop_reason")
@@ -281,6 +293,12 @@ class ResponseObserver:
             self.stream_error = event.get("error") or event
 
     def finish(self):
+        for block in self.content:
+            if block.get("type") == "tool_use" and isinstance(block.get("input"), str):
+                try:
+                    block["input"] = json.loads(block["input"] or "{}")
+                except ValueError:
+                    pass
         if self.sse or self.parse_note or not self.body:
             return
         try:
@@ -291,6 +309,8 @@ class ResponseObserver:
             self.usage_start = obj.get("usage")
             self.stop_reason = obj.get("stop_reason")
             self.response_model = obj.get("model")
+            if isinstance(obj.get("content"), list):
+                self.content = obj["content"]
 
     def usage(self):
         # message_delta usage is cumulative; start values fill what delta omits.
@@ -353,7 +373,7 @@ RAW_META_FIELDS = (
     "consumer", "request_model", "request_stream", "request_body_bytes", "request_body_sha256",
     "forwarded_body_sha256", "transform", "upstream_url", "upstream_target", "lab_request_id",
     "request_headers", "forwarded_headers", "status", "error", "ttft_s", "total_s",
-    "usage", "stop_reason", "response_model", "sse_events",
+    "usage", "stop_reason", "response_model", "sse_events", "response_content",
 )
 
 
@@ -522,6 +542,7 @@ def make_handler(cfg, mode, http, sessions):
                     stop_reason=observer.stop_reason,
                     response_model=observer.response_model,
                     sse_events=observer.events if observer.sse else None,
+                    response_content=observer.content or None,
                 )
                 if observer.stream_error and not record["error"]:
                     record["error"] = {"type": "stream_error", "detail": observer.stream_error}
