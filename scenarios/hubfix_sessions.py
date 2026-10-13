@@ -15,6 +15,7 @@ Usage: python3 scenarios/hubfix_sessions.py --prefix p1- --out reports/hubfix-ph
 import argparse
 import json
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 LAB = Path(__file__).resolve().parent.parent
@@ -67,6 +68,7 @@ def main():
     ap.add_argument("--prefix", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--title", default="Hub-fix lab: short sessions")
+    ap.add_argument("--clock-skew", type=int, default=180, help="seconds of margin around started/ended")
     a = ap.parse_args()
     sessions = latest(LAB / "logs/hubfix/sessions.jsonl", a.prefix)
     raw = ko.load_raw(LAB / "logs/raw", sessions={s["session"] for s in sessions.values()})
@@ -82,7 +84,11 @@ def main():
     for label, s in sorted(sessions.items(), key=lambda kv: kv[1].get("started", "")):
         sid = s["session"]
         # Only the session's own minutes: replay runs re-send its bodies, which carry its session id.
-        t0, t1 = s["started"][:19], s["ended"][:19]
+        # started/ended come from the Windows PC's clock, which may be off from the server's
+        # (AChan-Computa: ~70 s behind), hence the --clock-skew margin on both sides.
+        skew = timedelta(seconds=a.clock_skew)
+        t0 = (datetime.fromisoformat(s["started"][:19]) - skew).isoformat()
+        t1 = (datetime.fromisoformat(s["ended"][:19]) + skew).isoformat()
         own = {src: [r for r in reqs if r["session"] == sid and t0 <= r["ts"][:19] <= t1]
                for src, reqs in raw.items()}
         res = ko.analyze(own, session=sid)
