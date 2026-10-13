@@ -43,7 +43,7 @@ for case in $CASES; do
   esac
   sid=$(python3 -c 'import uuid; print(uuid.uuid4())')
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  out=$(env "${envs[@]}" timeout 180 scripts/run-claude.sh "$DEV" P -p "$PROMPT" --session-id "$sid" \
+  out=$(env "${envs[@]}" timeout 180 bash scripts/run-claude.sh "$DEV" P -p "$PROMPT" --session-id "$sid" \
           --output-format json "${args[@]}" 2>&1); rc=$?
   result=$(printf '%s' "$out" | python3 -c 'import json,sys
 t=sys.stdin.read()
