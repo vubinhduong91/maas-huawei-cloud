@@ -147,3 +147,19 @@ P2S chỉ dùng để đo drift: `core.json.stably_encode` trần lỗi 500 khi 
 Script phase 4–6 tự khôi phục lab về P0 / APISIX 3.11 / tap passthrough khi xong. Gói bằng chứng gồm report,
 log chạy, log hash của replay, `replay.py` và một ví dụ drift (body pre/post, `metadata.user_id` đã che); script
 dừng nếu thấy bất kỳ key nào trong `.env`.
+
+## Lab hub-fix
+
+Gateway phải đổi `model` (Sonnet → GLM) và `output_config.effort` (`medium → high`, `xhigh → max`) vì MaaS
+`glm-5.3` trả 400 với `medium`/`xhigh`, nhưng không được encode lại cả body (làm hỏng prompt cache). Báo cáo:
+`docs/hub-fix-report.md`; bàn giao: `deliverables/hubfix/` (Lua + route, hướng dẫn, checklist, tóm tắt cho MaaS).
+
+| Việc | Lệnh |
+|---|---|
+| Profile gateway | `LAB_GATEWAY_PROFILE=P3` (decode + cjson encode), `P4` (sửa đúng byte, `apisix/hubfix/patch.lua`), `P5` (encode key sắp xếp, `apisix/hubfix/stable_encode.lua`), rồi `make up MODE=B` |
+| Unit test P4/P5 | `make test-hubfix` |
+| Sinh và chạy thử file bàn giao | `make hubfix-deliverables`, `make test-hubfix-deliverables` |
+| Replay + overhead | `bash scenarios/hubfix_phase3.sh [replay] [overhead]` |
+| Session thật (Windows, đăng nhập Claude) | `scenarios\hubfix_phase3_sessions.ps1`, tổng hợp `python3 scenarios/hubfix_sessions.py --prefix p3- --out ...` |
+
+Luôn chạy `make render-check` trước khi bật profile mới (một lần render lỗi làm APISIX không lên lại được).

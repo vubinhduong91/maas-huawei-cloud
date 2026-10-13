@@ -12,7 +12,7 @@ ifneq ($(MODE),A)
 export COMPOSE_PROFILES := tap
 endif
 
-.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down analyze test-analyze scenario report keyorder-up keyorder-down keyorder test-keyorder keyorder-session keyorder-report keyorder-evidence test-hubfix
+.PHONY: up down probe smoke render-check logs clean-logs tap-test tap-smoke diff test-phase2 dashboard dashboard-down analyze test-analyze scenario report keyorder-up keyorder-down keyorder test-keyorder keyorder-session keyorder-report keyorder-evidence test-hubfix hubfix-deliverables test-hubfix-deliverables
 
 # Call MaaS directly to verify auth header / count_tokens / model names.
 probe:
@@ -125,6 +125,14 @@ test-hubfix:
 	docker run --rm --entrypoint /usr/local/openresty/luajit/bin/luajit \
 	  -v $(CURDIR)/apisix/hubfix:/hubfix:ro -v $(CURDIR)/logs/hubfix/fixtures:/fixtures:ro \
 	  apache/apisix:3.11.0-debian /hubfix/test_stable_encode.lua /fixtures
+
+# Hub-fix hand-over: regenerate deliverables/hubfix from apisix/hubfix/patch.lua, and run those files
+# on real APISIX (3.11 standalone + 3.14.1 Admin API) with the replay echo as upstream.
+hubfix-deliverables:
+	python3 scenarios/hubfix_deliverables.py
+
+test-hubfix-deliverables:
+	bash scenarios/hubfix_deliverable_test.sh
 
 # Phase 7: docs/keyorder-findings.md + latest phase summaries -> reports/keyorder-report.md;
 # keyorder-evidence also packs reports, run/replay logs and one drift example into
