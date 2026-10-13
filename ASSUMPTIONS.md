@@ -263,3 +263,28 @@ Lab thứ ba: gateway phải map mức thinking/effort của Claude Code về m�
 
 ## Lab hub-fix — Phase 0, bước 4: mapping đã duyệt (2026-10-13)
 - Bảng lỗi và mapping: `docs/hubfix-phase0.md`. User duyệt: `model` `claude-sonnet-5-5` → `glm-5.3`; top-level `output_config.effort` `medium → high`, `xhigh → max`, `low/high/max` giữ nguyên, thiếu hoặc giá trị lạ thì không sửa. Không sửa `thinking`, `max_tokens`, `messages[1].output_config`.
+
+## Lab hub-fix — Phase 1: baseline giống Hub (P3, biến thể A) (2026-10-13)
+- [LAB] **P3** (`LAB_GATEWAY_PROFILE=P3`, `apisix/apisix.yaml.tmpl` + `render.py`): trong `serverless-pre-function` (chạy 1 lần nhờ `ctx.lab_pre_done`), **trước** bước kiểm passthrough: `core.json.decode` body → `model` bắt đầu `claude-sonnet-` thì đổi thành `MAAS_MODEL_MAIN` (`glm-5.3`) → top-level `output_config.effort` `medium→high`, `xhigh→max` → nếu `model` không còn là `claude-*` thì `core.json.encode` (lua-cjson) **cả body** và `ngx.req.set_body_data`. Mọi body đi MaaS đều bị encode lại, có sửa hay không. `claude-opus-*`/`claude-haiku-*` không bị đụng và đi Anthropic qua passthrough (user chọn: chỉ map Sonnet, phần còn lại dùng Claude thật).
+- [LAB] Client: **Windows DuongVu-Computa, Claude Code 2.1.292**, đăng nhập Claude Pro trong config riêng `%USERPROFILE%\.claude-hubfix`. `scripts/claude-maas.ps1` có thêm `-TapPre` (tunnel `localhost:19001` → tap-pre :9001) và `-ConfigDir`; launcher giờ escape dấu `"` trong đối số trước khi gọi `claude` (PowerShell 5.1 làm mất dấu này, prompt có JSON bị hỏng). Pipe prompt qua stdin không dùng được vì host PowerShell này luôn chèn BOM.
+- **Body 2.1.292 giống 2.1.296** ở các trường cần map (`scenarios/hubfix_win_capture.ps1`, 7 case): Sonnet = `claude-sonnet-5-5`, `thinking` adaptive, chỉ `output_config.effort` đổi theo mức, mặc định `medium`, có `messages[1].output_config`. Haiku = `claude-haiku-4-5-20251001`, `thinking:{type:enabled,budget_tokens:31999}`, không có `output_config`.
+- **Hết lỗi 400/404** (`scenarios/hubfix_check.py`, so body tap-pre ↔ tap-post theo `X-Lab-Req-Id`): 6/6 mức Sonnet trên Windows → 200 qua MaaS. Body đổi đúng `model` → `glm-5.3` và effort `medium→high`, `xhigh→max`, `low/high/max` giữ nguyên; `messages[1].output_config` không đổi. Ngoài hai trường này **chỉ có số bị cjson làm tròn**: `9007199254740991` → `9.007199254741e+15`, tức là **giá trị** đổi thành `9007199254741000` (14 chữ số có nghĩa), không chỉ cách viết; 5 chỗ trong `tools` (`maximum`/`minimum`). Haiku → Anthropic 200, body giữ nguyên byte. 6 body Sonnet 2.1.296 của Phase 0 gửi lại qua APISIX P3: 6/6 → 200 (gửi thẳng ở Phase 0: 404).
+- **Replay** (`scenarios/hubfix_replay.sh`, run `20261013-025224`, upstream echo, 0 token): 3 body Sonnet thật lấy từ session P3 (80.387 / 128.338 / 145.467 B), mỗi body × 30 lần × concurrency 1 và 8. Số dạng byte khác nhau trên 30 lần (`distinct bytes`; `distinct content (sorted keys)` luôn = 1):
+
+| Đường | small c1 / c8 | medium c1 / c8 | large c1 / c8 | Body còn nguyên byte | Dấu vân tay cjson |
+|---|---|---|---|---|---|
+| direct (không gateway) | 1 / 1 | 1 / 1 | 1 / 1 | 180/180 | 0/180 |
+| P3, 1 worker | 2 / 2 | 2 / 2 | 1 / 3 | 0/180 | 180/180 |
+| P3, 4 worker | 2 / 4 | 7 / 4 | 7 / 4 | 0/180 | 180/180 |
+
+  P3 tái hiện drift giống P2 của key-order Phase 5 (2–9 dạng): 1 worker vẫn không ổn định; 4 worker tới 7 dạng/30 lần. Có tới 33 tool có hơn một thứ tự key.
+- **Session thật** (`scenarios/hubfix_win_session.ps1`, biến thể 2b, `keyorder-short.txt` + MCP `lab-tfs`, cùng commit Reaparr; `scenarios/hubfix_sessions.py` → `reports/hubfix-phase1.md` trên ECS). Chạy xen kẽ P3 → P0 → P3, gateway 4 worker:
+
+| Session | Client | Gateway | Prompt | Request MaaS | Loại 1 ra khỏi gateway | Dấu vân tay | non-200 | Cache hit MaaS |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| p1-P3-a | Sonnet (`medium→high`) | P3 | 6/6 | 22 | 8/20 (40%) | 22/22 | 0 | **54,9%** |
+| p1-P0-glm | glm-5.3 phía client (`high`) | P0 | 6/6 | 25 | 0/23 | 0/25 | 0 | **88,6%** |
+| p1-P3-b | Sonnet (`medium→high`) | P3 | 6/6 | 21 | 3/19 (16%) | 21/21 | 0 | **62,1%** |
+
+  P3 hết lỗi (0 non-200, 0 tool lỗi) nhưng mất 27–34 điểm cache so với P0, cùng cỡ với P2 ở key-order Phase 6 (62,2%). Hai session P3 khác nhau (40% vs 16% drift) vì thứ tự key của cjson phụ thuộc trạng thái worker.
+- Không có request haiku/opus nào trong 3 session (subagent general-purpose dùng model của session chính; `claude -p` không gửi request nền haiku). Đường haiku → Anthropic chỉ được kiểm bằng case `H-default`. Session P0 khác session P3 ở phía client (tên model, `[1m]`, effort `high` thay vì `medium→high`, không có `messages[1]` per-turn), nên không phải đối chứng cùng byte đầu vào.

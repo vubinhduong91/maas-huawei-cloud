@@ -12,6 +12,10 @@
       subscription token.
     - APISIX identifies you by the X-Lab-Key header (ANTHROPIC_CUSTOM_HEADERS).
   -ClaudeSonnet: same, but the sonnet tier stays Claude Sonnet (comparison runs, S9).
+  -TapPre: tunnel to the key-order/hub-fix tap-pre (server :9001, then APISIX) instead of
+    APISIX :9080, so the lab records the body before and after the gateway (local port 19001).
+  -ConfigDir <dir>: Claude Code config dir for this run (e.g. a separate login for lab runs,
+    so your own CLAUDE.md / MCP servers / memory never reach the lab requests).
   -MaasOnly mode:
     - Every tier is glm-5.3 via MaaS; authenticates with the dev key as ANTHROPIC_AUTH_TOKEN
       and uses a separate config dir (%USERPROFILE%\.claude-maas), no Anthropic login.
@@ -35,7 +39,9 @@ param(
     [string] $GlmModel = "glm-5.3",   # not "-Model": PowerShell would bind claude's --model to it
     [switch] $MaasOnly,
     [switch] $ClaudeSonnet,     # S9: keep the real Claude Sonnet for the sonnet tier (no GLM)
-    [switch] $NoBackgroundTraffic
+    [switch] $NoBackgroundTraffic,
+    [switch] $TapPre,           # hub-fix lab: go through tap-pre (:9001) instead of APISIX (:9080)
+    [string] $ConfigDir = ""    # Claude Code config dir (default: your normal one)
 )
 $ErrorActionPreference = "Stop"
 if (-not $Server) { throw "Usage: claude-maas.ps1 -Server root@<ip> [-IdentityFile key] [-MaasOnly] [claude args...]" }
@@ -54,8 +60,13 @@ function Test-Port([int] $port) {
     try { $client.Connect("127.0.0.1", $port); return $true } catch { return $false } finally { $client.Close() }
 }
 
+$remotePort = 9080
+if ($TapPre) {
+    $remotePort = 9001
+    if (-not $PSBoundParameters.ContainsKey("LocalPort")) { $LocalPort = 19001 }
+}
 # Reuse a running tunnel only if it is ours and points at this -Server; otherwise replace it.
-$forward = "${LocalPort}:127.0.0.1:9080"
+$forward = "${LocalPort}:127.0.0.1:${remotePort}"
 $tunnels = @(Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Where-Object { $_.CommandLine -like "*$forward*" })
 foreach ($t in $tunnels | Where-Object { $_.CommandLine -notlike "*$Server*" }) {
     Write-Host "claude-maas: closing tunnel to another server (pid $($t.ProcessId))"
@@ -71,7 +82,7 @@ if (-not (Test-Port $LocalPort)) {
                  "-o", "StrictHostKeyChecking=accept-new", "-L", $forward)
     if ($IdentityFile) { $sshArgs += @("-i", $IdentityFile) }
     $sshArgs += $Server
-    Write-Host "claude-maas: opening SSH tunnel localhost:$LocalPort -> ${Server}:9080"
+    Write-Host "claude-maas: opening SSH tunnel localhost:$LocalPort -> ${Server}:${remotePort}"
     if ($IdentityFile) {
         Start-Process -FilePath "ssh" -ArgumentList $sshArgs -WindowStyle Hidden | Out-Null
         $deadline = (Get-Date).AddSeconds(20)
@@ -113,11 +124,19 @@ if ($MaasOnly) {
         $summary = "sonnet=$GlmModel (MaaS), opus/haiku=Claude subscription, config=default"
     }
 }
+if ($ConfigDir -and -not $MaasOnly) {
+    $env:CLAUDE_CONFIG_DIR = $ConfigDir
+    $summary = $summary -replace "config=default", "config=$ConfigDir"
+}
 if ($NoBackgroundTraffic) { $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
 else { Remove-Item Env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC -ErrorAction SilentlyContinue }
 
 Write-Host "claude-maas: base=$($env:ANTHROPIC_BASE_URL) $summary"
 # claude writes notices to stderr; with "Stop", PowerShell 5.1 would turn them into errors.
 $ErrorActionPreference = "Continue"
+# PowerShell 5.1 does not escape embedded double quotes when it calls a native program, so a
+# prompt such as 'set {"a": 1}' would reach claude without its quotes. Escape them the way
+# Windows programs parse their command line (backslashes before a quote are doubled).
+$ClaudeArgs = @($ClaudeArgs | ForEach-Object { if ($_ -is [string]) { $_ -replace '(\\*)"', '$1$1\"' } else { $_ } })
 & claude @ClaudeArgs
 exit $LASTEXITCODE

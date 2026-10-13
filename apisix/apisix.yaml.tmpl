@@ -34,7 +34,7 @@ routes:
               -- when Claude Code is logged in with a Claude subscription), x-api-key
               -- (ANTHROPIC_API_KEY), Authorization: Bearer (ANTHROPIC_AUTH_TOKEN).
               -- key-auth reads x-api-key. The client Authorization is dropped here;
-              -- proxy-rewrite sets the MaaS one. The body is never modified.
+              -- proxy-rewrite sets the MaaS one. The body is modified only by the P2/P2S/P3 blocks.
               -- APISIX runs rewrite-phase plugins again after key-auth found the consumer
               -- ("rewrite_in_consumer"); by then the headers are already rewritten, so run once.
               if ctx.lab_pre_done then
@@ -45,6 +45,34 @@ routes:
               local PASSTHROUGH = @{PASSTHROUGH_LUA}
               local auth = core.request.header(ctx, "authorization")
               core.request.set_header(ctx, "x-lab-target", nil)   -- never trust it from the client
+              -- Hub-fix lab profile P3 (variant A, simulates the customer's Hub): decode the body,
+              -- map model claude-sonnet-* -> GLM and top-level output_config.effort
+              -- medium -> high, xhigh -> max (MaaS glm-5.3 accepts only low/high/max), then
+              -- re-encode the WHOLE body with core.json.encode (lua-cjson). Runs before the
+              -- passthrough check, so a mapped Sonnet request goes to MaaS and other claude-*
+              -- models still go to Anthropic. Every MaaS-bound body is re-encoded, edited or not.
+              if @{HUBFIX_P3_LUA} then
+                local raw = core.request.get_body(nil, ctx)
+                local ok, req = pcall(core.json.decode, raw or "")
+                if ok and type(req) == "table" then
+                  if type(req.model) == "string" and req.model:sub(1, 14) == "claude-sonnet-" then
+                    req.model = @{HUBFIX_GLM_MODEL}
+                  end
+                  local oc = req.output_config
+                  if type(oc) == "table" then
+                    local map = { medium = "high", xhigh = "max" }
+                    if map[oc.effort] then
+                      oc.effort = map[oc.effort]
+                    end
+                  end
+                  if type(req.model) ~= "string" or req.model:sub(1, 7) ~= "claude-" then
+                    local out = core.json.encode(req)
+                    if out then
+                      ngx.req.set_body_data(out)
+                    end
+                  end
+                end
+              end
               if PASSTHROUGH then
                 -- Claude models go to api.anthropic.com with the client's own token
                 -- (traffic-split + serverless-post-function below); GLM models go to MaaS.

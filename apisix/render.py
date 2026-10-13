@@ -74,8 +74,8 @@ def lab_mode():
 
 def gateway_profile():
     profile = os.environ.get("LAB_GATEWAY_PROFILE", "P0").strip().upper() or "P0"
-    if profile not in ("P0", "P1", "P2", "P2S"):
-        die(f"LAB_GATEWAY_PROFILE must be P0, P1, P2 or P2S, got {profile!r}")
+    if profile not in ("P0", "P1", "P2", "P2S", "P3"):
+        die(f"LAB_GATEWAY_PROFILE must be P0, P1, P2, P2S or P3, got {profile!r}")
     return profile
 
 
@@ -202,6 +202,8 @@ def render(redacted):
         PASSTHROUGH_PLUGINS=PASSTHROUGH_PLUGINS.format(to_tap="true" if mode == "B" else "false") if passthrough else "",
         REENCODE_LUA="true" if profile in ("P2", "P2S") else "false",
         REENCODE_FN="core.json.stably_encode" if profile == "P2S" else "core.json.encode",
+        HUBFIX_P3_LUA="true" if profile == "P3" else "false",
+        HUBFIX_GLM_MODEL=json.dumps(env("MAAS_MODEL_MAIN")),
         AI_PROXY=AI_PROXY.format(
             auth=json.dumps({auth_header: auth_value}),
             model=q(env("MAAS_MODEL_MAIN")),
