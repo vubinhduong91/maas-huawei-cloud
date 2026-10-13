@@ -13,9 +13,12 @@ và cấu hình: `ASSUMPTIONS.md` (các mục "Lab key-order drift"); bảng g�
 
 **Drift sinh ra ở gateway, khi một plugin decode body rồi encode lại bằng lua-cjson** (`core.json.encode`).
 Lua table không giữ thứ tự key, nên cùng một body vào có thể ra nhiều thứ tự key khác nhau. MaaS render
-`tools` ở đầu prompt, nên đổi thứ tự key ở tool k thì cache chỉ còn phần trước tool k. Encode bằng
-`core.json.stably_encode` (hoặc sắp xếp key trước MaaS) làm hết drift và đưa cache hit về mức không có gateway
-đụng body.
+`tools` ở đầu prompt, nên đổi thứ tự key ở tool k thì cache chỉ còn phần trước tool k. Encode với thứ tự key
+ổn định (hoặc sắp xếp key trước MaaS) làm hết drift và đưa cache hit về mức không có gateway đụng body.
+
+**Đính chính (2026-10-13, lab hub-fix):** bản trước khuyến nghị đổi một dòng sang `core.json.stably_encode`.
+Dùng trực tiếp như vậy là **không an toàn**: trên bảng do `core.json.decode` tạo ra, hàm này trả lỗi (HTTP 500)
+khi body có JSON `null`, và ghi mọi object rỗng `{}` thành `[]` trong schema của tool. Cách sửa thay thế ở mục 4.
 
 ### 2. Sự thật đã xác nhận (có số liệu)
 
@@ -51,10 +54,16 @@ Lua table không giữ thứ tự key, nên cùng một body vào có thể ra n
 
    Replay P2S: 1 thứ tự key trên 360 lần gửi (P2 cùng run: 2–9). Không fix nào làm hỏng session (6/6 prompt,
    0 lỗi HTTP).
+
+   Hai lỗi của P2S lộ ra ở lab hub-fix, không thấy được ở đây: body của các session này không có `null`
+   (Claude Code chạy trong git repo), và MaaS vẫn trả 200 khi `properties: {}` của tool đã thành `[]`. Trên 65
+   fixture từ body Claude Code thật, `core.json.stably_encode` trần lỗi ở 32 body có `null` và đổi nội dung ở
+   32 body còn lại (`ASSUMPTIONS.md`, mục "Lab hub-fix — Phase 2").
 7. **Dấu vân tay cjson trên đường truyền:** `9007199254740991` (`Number.MAX_SAFE_INTEGER` trong schema của
    `Read.offset/limit` và vài tool khác) thành **`9.007199254741e+15`** sau khi đi qua cjson (2.160/2.160 body
    qua P1/P2; 720/720 body qua P0 giữ nguyên). P1 còn thêm `stream_options` vào body. Dấu vân tay vẫn có ở P2S
-   (cjson làm tròn lúc decode) nhưng ổn định giữa các lần gửi nên không ảnh hưởng cache.
+   (dkjson cũng in số với 14 chữ số có nghĩa khi encode) nhưng ổn định giữa các lần gửi nên không ảnh hưởng
+   cache. Giá trị số bị đổi thật: `9007199254740991` thành `9007199254741000`.
 
 ### 3. Suy luận (chưa chứng minh trực tiếp trên production)
 
@@ -71,8 +80,11 @@ Lua table không giữ thứ tự key, nên cùng một body vào có thể ra n
 
 1. **Không decode + encode lại body** khi plugin không cần sửa body (đọc field thì decode bản copy, forward
    nguyên bytes). Đây là cấu hình có hit cao nhất (P0).
-2. Nếu plugin bắt buộc sửa body: **thay `core.json.encode` bằng `core.json.stably_encode`** (có sẵn trong
-   APISIX `core/json.lua`, sắp xếp key, cùng input cho cùng bytes).
+2. Nếu plugin bắt buộc sửa body: **chỉ thay đúng các byte cần đổi**, không encode lại cả body. Lab hub-fix có
+   bản cài đặt và unit test cho trường hợp đổi `model` và `output_config.effort` (`apisix/hubfix/patch.lua`).
+   Nếu buộc phải encode lại cả body: dùng encoder có thứ tự key ổn định **đã xử lý `null` và object rỗng**
+   (`apisix/hubfix/stable_encode.lua`). **Không** thay thẳng bằng `core.json.stably_encode` (xem đính chính ở
+   mục 1).
 3. Nếu không sửa được gateway: **sắp xếp key toàn body tại ingress MaaS** (hoặc một proxy ngay trước MaaS).
 4. Khi đổi cách encode, cache cũ (tạo từ thứ tự key khác) không được dùng lại, chỉ mất một lần.
 
@@ -90,6 +102,7 @@ Lua table không giữ thứ tự key, nên cùng một body vào có thể ra n
   P1/P2 là mô phỏng hai kiểu plugin phổ biến có sửa body.
 - Mỗi cấu hình Claude Code thật chỉ có 1 session ngắn (Phase 4, 6); replay (1.620 request ở Phase 5 + 720 ở Phase 6) bù cho cỡ
   mẫu nhỏ ở phần drift, không bù cho phần cache hit.
-- Chưa đo chi phí CPU / độ trễ của `stably_encode` (dkjson thuần Lua) trên body ~290 KB ở tải production.
+- Chi phí của encoder ổn định (dkjson thuần Lua) mới đo trong LuaJIT, chưa đo trong APISIX dưới tải: khoảng
+  8 ms với body 128 KB, 28 ms với body 700 KB; sửa đúng byte (`patch.lua`) khoảng 1 ms và 4 ms.
 - Cache hit trên MaaS có nhiễu routing (nhiều instance, không có session affinity): giá trị lệch ở Phase 3 đều
   giải thích được bằng prefix chung với request khác, nhưng hit theo từng request có độ lệch tự nhiên.

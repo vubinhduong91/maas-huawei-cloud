@@ -142,6 +142,8 @@ chi tiết từng phase: các mục "Lab key-order drift" trong `ASSUMPTIONS.md`
 
 Profile gateway (`LAB_GATEWAY_PROFILE`, mặc định P0): **P0** không đụng body; **P2** pre-function decode +
 `core.json.encode` (cjson); **P2S** như P2 nhưng `core.json.stably_encode`; **P1** `ai-proxy` (APISIX 3.14.1).
+P2S chỉ dùng để đo drift: `core.json.stably_encode` trần lỗi 500 khi body có `null` và đổi `{}` thành `[]`
+(xem lab hub-fix, `docs/keyorder-findings.md` mục 1); đừng dùng nó làm cách sửa trên production.
 Script phase 4–6 tự khôi phục lab về P0 / APISIX 3.11 / tap passthrough khi xong. Gói bằng chứng gồm report,
 log chạy, log hash của replay, `replay.py` và một ví dụ drift (body pre/post, `metadata.user_id` đã che); script
 dừng nếu thấy bất kỳ key nào trong `.env`.
