@@ -1,0 +1,11 @@
+# Hub-fix P4-vs-P0 test: keyorder-short.txt plus subagents with an explicit model and a /compact
+# in the middle, so the session also has Sonnet and Haiku subagent requests and a compacted
+# history. Lines starting with "mcp:" need the lab-tfs MCP server (hubfix_win_session.ps1 has it).
+Use TaskCreate to create two tasks: "Add a Note property" and "Review the change". Then, using Glob or `ls` only, list the top-level folders of this repository in one line.
+mcp: Use the lab-tfs tool tfs_get_workitem to read work item 4211, then tfs_update_workitem to set state Active, priority 2 and custom_fields {"component": "DownloadTask", "estimate_hours": 3}.
+Use Grep to find where the download task entity class is defined under src/Domain, Read only that file, and use TaskUpdate to mark the first task in progress.
+Use the Agent tool with model "sonnet" to start a general-purpose subagent that finds which PublicAPI endpoint creates download tasks; it must report the file path and class name only.
+Use the Agent tool with model "haiku" to start a general-purpose subagent that counts the .cs files under src/Domain with Glob; it must report the number only.
+/compact
+Use Edit to add a nullable string property `Note` to the download task entity, then use Bash to run `git diff --stat`.
+Use TaskUpdate to mark both tasks completed, then use Bash `git status --short` and write a two-line summary.

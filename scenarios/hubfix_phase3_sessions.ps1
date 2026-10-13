@@ -23,7 +23,10 @@ param(
     [string[]] $Configs = @("P0", "P3", "P4", "P5"),
     [string] $Server = "root@111.119.197.251",
     [string] $IdentityFile = "$env:USERPROFILE\.ssh\maas_ecs",
-    [int] $FirstRun = 1
+    [int] $FirstRun = 1,
+    [string] $Prefix = "p3-",   # label prefix (the P4-vs-P0 test uses pc-)
+    [string] $Prompts = "",     # passed on to hubfix_win_session.ps1
+    [switch] $NoGit
 )
 $ErrorActionPreference = "Stop"
 $session = Join-Path $PSScriptRoot "hubfix_win_session.ps1"
@@ -48,7 +51,8 @@ try {
                 $client = if ($cfg -eq "P0") { "glm" } else { "sonnet" }
                 $effort = ""
                 if ($level -eq "xhigh") { $effort = if ($client -eq "glm") { "max" } else { "xhigh" } }
-                & $session -Label "p3-$cfg-$level-r$r" -Client $client -Gateway $cfg -Workers 4 -Effort $effort
+                & $session -Label "$Prefix$cfg-$level-r$r" -Client $client -Gateway $cfg -Workers 4 -Effort $effort `
+                           -Prompts $Prompts -NoGit:$NoGit
             }
         }
     }

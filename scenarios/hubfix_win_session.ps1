@@ -28,7 +28,10 @@ param(
     [string] $IdentityFile = "$env:USERPROFILE\.ssh\maas_ecs",
     [string] $ConfigDir = "$env:USERPROFILE\.claude-hubfix",
     [string] $Repo = "$env:USERPROFILE\maas-lab\sample-repo-hubfix",
-    [string] $Prompts = ""
+    [string] $Prompts = "",
+    # Run in a copy of the repo without .git: Claude Code then sends JSON nulls in the body
+    # (safeguards git_state), the case that broke plain core.json.stably_encode.
+    [switch] $NoGit
 )
 $ErrorActionPreference = "Stop"
 $lab = Split-Path $PSScriptRoot -Parent
@@ -59,13 +62,22 @@ if (-not (Test-Path (Join-Path $Repo ".git"))) {
 }
 Invoke-Git reset -q --hard lab
 Invoke-Git clean -qfd
+if ($NoGit) {
+    $copy = "$Repo-nogit"
+    if (Test-Path $copy) { Remove-Item -Recurse -Force $copy }
+    & robocopy $Repo $copy /E /XD .git /NFL /NDL /NJH /NJS /NP | Out-Null
+    $Repo = $copy
+}
 
 $runId = Get-Date -Format "yyyyMMdd-HHmmss"
 $state = Join-Path $env:TEMP "hubfix-session"
 New-Item -ItemType Directory -Force $state | Out-Null
 $tfsState = Join-Path $state "lab-tfs-state-$runId.json"
 $mcpCfg = Join-Path $state "mcp-lab-tfs-$runId.json"
-$py = (Get-Command python).Source
+# the WindowsApps python.exe is only the Microsoft Store stub
+$py = @(Get-Command python -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch "WindowsApps" })[0].Source
+if (-not $py) { $py = @(Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" -ErrorAction SilentlyContinue)[-1].FullName }
+if (-not $py) { throw "no Python found (needed for the lab-tfs MCP server)" }
 @{ mcpServers = @{ "lab-tfs" = @{ command = $py; args = @((Join-Path $lab "scenarios\mcp\lab_tfs.py"));
                                   env = @{ LAB_TFS_STATE = $tfsState } } } } |
     ConvertTo-Json -Depth 6 | Set-Content -Path $mcpCfg -Encoding ASCII
