@@ -1,0 +1,3 @@
+# S10 part B: the two turns after the lunch break (resumed session). One prompt per line.
+Back from lunch. Remind me in three bullets what we found about how the app talks to Plex, then show where the Plex server address is configured.
+Which of the scheduled jobs you listed would be affected if Plex is unreachable, and how do they handle the error?
