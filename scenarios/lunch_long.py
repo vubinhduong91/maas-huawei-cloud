@@ -4,6 +4,8 @@
 Usage: python3 scenarios/lunch_long.py [--hours 15] [--every 150] [--soft-budget 45] [--hard-budget 48]
        python3 scenarios/lunch_long.py --dry-run          # 2 trials (small + large), 20 s idle
        python3 scenarios/lunch_long.py --summary [RUN] [--out reports/x.md]   # read-only, any time
+       python3 scenarios/lunch_long.py --continue RUN --soft-budget 55 --hard-budget 58
+           # raise a running RUN's budget: waits for its soft stop, then runs the rest of its plan
 
 S10 (scenarios/lunch.py) had one trial per idle point at ~159K tokens. S11 trades size for count:
   trial : own nonce in tools[0].description, so no two trials share a cache entry
@@ -27,6 +29,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -64,7 +67,13 @@ def small_body(sd, nonce, files):
 class Cost:
     def __init__(self, soft, hard):
         self.soft, self.hard, self.usd, self.lock = soft, hard, 0.0, threading.Lock()
+        self.base = 0.0                     # --continue: spending of the first process, as last seen
         self.prices = R.maas_prices(R.LAB / ".env")
+
+    def sync(self, base):
+        with self.lock:
+            self.usd += max(0.0, base - self.base)
+            self.base = max(self.base, base)
 
     def add(self, recs):
         with self.lock:
@@ -105,12 +114,14 @@ def tokens(recs):
     return max((sum(R.usage(r)[:3]) for r in recs if r.get("status") == 200), default=0)
 
 
-def trial(k, size, delay, sd, run, bodies, cost, out_path, write_lock):
+def trial(k, size, delay, sd, run, bodies, cost, out_path, write_lock, proc=None):
     session = f"S11-{k:03d}-{size}-{delay}s-{run}"
     R.label(session, "S11", run, trial=k, size=size, delay_s=delay)
     body = bodies[size](f"S11-{k}-{run}")
     rec = {"run": run, "trial": k, "size": size, "delay_s": delay, "session": session,
            "start": datetime.now().isoformat(timespec="seconds"), "warm": []}
+    if proc:
+        rec["proc"] = proc
     try:
         warm_end = None
         for w in range(WARM_ROUNDS):
@@ -161,6 +172,33 @@ def schedule(args):
     return plan
 
 
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, TypeError):
+        return False
+
+
+def first_spent(out_path):
+    """Spending of the first process: max cost_usd_total over its records (no 'proc' key)."""
+    recs = [json.loads(l) for l in out_path.read_text().splitlines() if l.strip()] if out_path.exists() else []
+    return max((r.get("cost_usd_total") or 0 for r in recs if "proc" not in r), default=0.0)
+
+
+def wait_takeover(log_path, pid, poll=15):
+    """Block until the first process logs its soft-budget stop → index of the first trial it
+    did not start; None if it exits without one (all trials started)."""
+    pat = re.compile(r"soft budget \$[\d.]+ reached .*no new trials from trial (\d+)")
+    while True:
+        m = pat.search(log_path.read_text(errors="replace")) if log_path.exists() else None
+        if m:
+            return int(m.group(1))
+        if not alive(pid):
+            return None
+        time.sleep(poll)
+
+
 # ---------------------------------------------------------------- summary (read-only)
 def wilson(h, n, z=1.96):
     if not n:
@@ -185,17 +223,15 @@ def summary(run, out):
     recs = [json.loads(l) for l in path.read_text().splitlines() if l.strip()] if path.exists() else []
     meta_p = R.STATE / f"lunchlong-{run}.meta.json"
     meta = json.loads(meta_p.read_text()) if meta_p.exists() else {}
-    alive = False
-    if meta.get("pid"):
-        try:
-            os.kill(meta["pid"], 0)
-            alive = True
-        except OSError:
-            pass
+    pids = [p for p in (meta.get("pid"), meta.get("cont_pid")) if p]
+    running = [p for p in pids if alive(p)]
     spent = max((r.get("cost_usd_total") or 0 for r in recs), default=0.0)
     lines = [f"# S11 long lunch — run `{run}`", "",
-             f"Generated {datetime.now():%Y-%m-%d %H:%M}. Process: {'running' if alive else 'not running'}"
-             f" (pid {meta.get('pid', '-')}). Started {meta.get('started', '-')}, planned end {meta.get('planned_end', '-')}.",
+             f"Generated {datetime.now():%Y-%m-%d %H:%M}. Process: {'running' if running else 'not running'}"
+             f" (pid {', '.join(map(str, running or pids)) or '-'}). Started {meta.get('started', '-')},"
+             f" planned end {meta.get('planned_end', '-')}."
+             + (f" Budget raised from ${meta['first_soft']}/${meta['first_hard']} by a --continue process"
+                f" from trial {meta.get('cont_from', '?')}." if "first_soft" in meta else ""),
              f"Trials finished: {len(recs)} of {meta.get('planned_trials', '?')} planned. Estimated cost so far:"
              f" ${spent:.2f} (upper-bound prices; soft/hard budget ${meta.get('soft', '?')}/${meta.get('hard', '?')}).",
              f"Body size (input tokens): " + ", ".join(
@@ -261,12 +297,17 @@ def main():
     ap.add_argument("--hard-budget", type=float, default=48)
     ap.add_argument("--seed-rng", type=int, default=11)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--continue", dest="cont", metavar="RUN",
+                    help="wait until RUN's process stops at its soft budget, then run its remaining"
+                         " trials on the same schedule with the new --soft-budget/--hard-budget")
     args = ap.parse_args()
     last = R.STATE / "lunchlong-last-run"
     if args.summary:
         run = last.read_text().strip() if args.summary == "__last__" else args.summary
         return summary(run, args.out)
 
+    if args.cont:
+        return cont(args)
     run = args.run_id + ("-dry" if args.dry_run else "")
     sd = json.loads(args.seed.read_text())
     seed_body = json.loads(sd["body"])
@@ -286,7 +327,9 @@ def main():
     meta = {"run": run, "pid": os.getpid(), "started": datetime.now().isoformat(timespec="seconds"),
             "planned_end": datetime.fromtimestamp(t_base + end_s).isoformat(timespec="seconds"),
             "planned_trials": len(plan), "soft": args.soft_budget, "hard": args.hard_budget,
-            "every": args.every, "hours": args.hours, "seed": sd["from"], "model": seed_body.get("model")}
+            "every": args.every, "hours": args.hours, "large_every": args.large_every,
+            "seed_rng": args.seed_rng, "small_tokens": args.small_tokens,
+            "seed": sd["from"], "model": seed_body.get("model")}
     (R.STATE / f"lunchlong-{run}.meta.json").write_text(json.dumps(meta, indent=1))
     n_small = sum(p[1] == "small" for p in plan)
     R.log(f"run {run}: {len(plan)} trials ({n_small} small, {len(plan) - n_small} large) over {end_s / 3600:.1f} h;"
@@ -304,6 +347,57 @@ def main():
     for th in threads:
         th.join()
     R.log(f"done; {len(threads)} trials started; estimated MaaS cost of run {run}: ${cost.usd:.2f}")
+    summary(run, R.REPORTS / f"scenario-S11-{run}.md")
+
+
+def cont(args):
+    """--continue RUN: same plan (rebuilt from RUN's meta), trials from where RUN stopped."""
+    run = args.cont
+    meta_p = R.STATE / f"lunchlong-{run}.meta.json"
+    meta = json.loads(meta_p.read_text())
+    for key in ("hours", "every", "large_every", "seed_rng", "small_tokens"):
+        if key in meta:
+            setattr(args, key, meta[key])
+    plan = schedule(args)
+    if len(plan) != meta["planned_trials"]:
+        sys.exit(f"rebuilt plan has {len(plan)} trials, {run} planned {meta['planned_trials']}: not continuing")
+    t_base = datetime.fromisoformat(meta["started"]).timestamp()
+    out_path = R.STATE / f"lunchlong-{run}.jsonl"
+    R.log(f"continue {run}: waiting for pid {meta['pid']} to stop at soft budget ${meta['soft']};"
+          f" then budget soft ${args.soft_budget} hard ${args.hard_budget}")
+    k0 = wait_takeover(R.STATE / f"{run}.log", meta["pid"])
+    if k0 is None:
+        R.log(f"continue {run}: pid {meta['pid']} ended without a soft-budget stop; nothing to do")
+        return
+    sd = json.loads(args.seed.read_text())
+    if sd["from"] != meta["seed"]:
+        sys.exit(f"--seed is from {sd['from']}, {run} used {meta['seed']}: not continuing")
+    base = len(small_body(sd, "x", []))
+    files, _ = L.repo_files(max(0, args.small_tokens * 3.5 - base))
+    bodies = {"small": lambda nonce: small_body(sd, nonce, files),
+              "large": lambda nonce: L.padded(sd, nonce, [])}
+    cost = Cost(args.soft_budget, args.hard_budget)
+    cost.sync(first_spent(out_path))
+    meta.update(cont_pid=os.getpid(), cont_from=k0, first_soft=meta["soft"], first_hard=meta["hard"],
+                soft=args.soft_budget, hard=args.hard_budget)
+    meta_p.write_text(json.dumps(meta, indent=1))
+    R.log(f"continue {run}: taking over at trial {k0} of {len(plan)}; spent so far ${cost.usd:.2f}")
+    write_lock, threads = threading.Lock(), []
+    for k, (t, size, delay) in enumerate(plan):
+        if k < k0:
+            continue
+        time.sleep(max(0.0, t_base + t - time.time()))
+        cost.sync(first_spent(out_path))   # the first process's in-flight trials still spend
+        if cost.usd > cost.soft:
+            R.log(f"soft budget ${cost.soft} reached (${cost.usd:.2f}): no new trials from trial {k} (continue)")
+            break
+        th = threading.Thread(target=trial, args=(k, size, delay, sd, run, bodies, cost, out_path, write_lock, "cont"))
+        th.start()
+        threads.append(th)
+    for th in threads:
+        th.join()
+    cost.sync(first_spent(out_path))
+    R.log(f"done (continue); {len(threads)} more trials started; estimated MaaS cost of run {run}: ${cost.usd:.2f}")
     summary(run, R.REPORTS / f"scenario-S11-{run}.md")
 
 
